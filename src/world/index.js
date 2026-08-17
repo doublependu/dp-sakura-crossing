@@ -72,7 +72,47 @@ import {
  * left of centre with the shop stacked against it.
  * ------------------------------------------------------------------ */
 
-export function buildWorld(scene) {
+/* ------------------------------------------------------------------ *
+ * Build progress.
+ *
+ * This is a straight line of about forty builders, all of it on the main
+ * thread -- so a loading screen put in front of it cannot repaint for the
+ * whole build and is a frozen picture rather than a progress bar.  The
+ * build hands the thread back between phases instead: `step()` reports what
+ * is about to happen and then waits one frame, which is long enough for the
+ * browser to paint the bar and nothing like long enough to be felt.
+ *
+ * `TOTAL` is simply the number of `step()` calls below.  It only has to
+ * match, and a mismatch is visible -- a bar that stops short or jumps at the
+ * end -- so the build says so out loud in dev rather than leaving it to be
+ * noticed.
+ * ------------------------------------------------------------------ */
+const TOTAL = 45;
+
+/**
+ * Hand the thread back for one frame.
+ *
+ * The timer is the floor, not a fallback: a hidden tab never fires rAF at
+ * all, so a build that only waits on it stops dead the moment somebody
+ * switches away from the page and never finishes.
+ */
+function nextFrame() {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') { setTimeout(resolve, 0); return; }
+    let fired = false;
+    const finish = () => { if (!fired) { fired = true; resolve(); } };
+    requestAnimationFrame(finish);
+    setTimeout(finish, 60);
+  });
+}
+
+/**
+ * @param scene       the render scene
+ * @param onProgress  optional `(fraction, label)`; omit it and the build runs
+ *                    straight through with no yields, which is what the
+ *                    headless tooling wants
+ */
+export async function buildWorld(scene, onProgress = null) {
   const root = new THREE.Group();
   root.name = 'world';
   scene.add(root);
@@ -133,14 +173,28 @@ export function buildWorld(scene) {
     update: (fn) => updaters.push(fn),
   };
 
+  let stepsDone = 0;
+  /** Report the phase about to run, then let the loader paint it. */
+  const step = async (label) => {
+    stepsDone++;
+    if (!onProgress) return;
+    onProgress((stepsDone - 1) / TOTAL, label);
+    await nextFrame();
+  };
+
   /* ------------------------------ base layers ------------------------------ */
+  await step('惑星');
   const planet = buildPlanet(scene);
+  await step('街路');
   buildStreet(ctx);
+  await step('桜踏切');
   const crossing = buildRailway(ctx);
   const train = buildTrain(ctx);
+  await step('青空商店');
   const shop = buildShop(ctx);
 
   /* -------------------------------- houses -------------------------------- */
+  await step('家並み');
   const houseDefs = [
     // Near side, left of the street.  These are held back deliberately: any
     // frontage closer than this walls off the sight line along the railway,
@@ -245,8 +299,12 @@ export function buildWorld(scene) {
    * plus three instanced canopies, so it has to run once, at the end.
    *
    * `buildDistrict` is last because it also dresses the housing above, and it
-   * needs the same definitions the house generator was given. */
-  const districts = [
+   * needs the same definitions the house generator was given.
+   *
+   * They are written as thunks rather than called in place only so the build
+   * can breathe between them and name what it is doing -- the call order, which
+   * every comment below is about, is exactly the order of this list. */
+  const districtBuilders = [
     /* 裏山 first, because it is *ground*: the only module other than `street.js`
      * that produces a walkable surface rather than things standing on one.  The
      * height field itself is a pure function and needs no ordering at all -- it
@@ -255,18 +313,18 @@ export function buildWorld(scene) {
      * so what this position actually buys is that the file reads in the order the
      * world is made in.  Its planting is handed back like every other
      * district's. */
-    buildHills(ctx),
+    ['裏山', () => buildHills(ctx)],
     /* The tunnel builds the mountain over the railway, which is the one piece of
      * ground `hills.js` deliberately cut out of itself -- so it runs immediately
      * after it, and it reads `hillAt` along the notch's two lattice edges to meet
      * the hillside exactly. */
-    buildTunnel(ctx),
-    buildSchool(ctx),
+    ['東山トンネル', () => buildTunnel(ctx)],
+    ['県立ひばり台高等学校', () => buildSchool(ctx)],
     /* 裏山 runs after the school and before everything else it touches: its
      * hill-foot road comes off the 通学路's old dead end (`approach.js` opens it),
      * runs behind the school's new north wall and up its new east side, so both
      * of those have to exist before it measures anything off them. */
-    buildUrayama(ctx),
+    ['ひばり山', () => buildUrayama(ctx)],
     /* ひばり湖 runs immediately after 裏山, and the order is load-bearing in one
      * direction: `lakeroad.js`'s road leaves the *top of the school's outer road*,
      * so `urayama.js` has to have laid that surface before this measures the
@@ -277,43 +335,43 @@ export function buildWorld(scene) {
      * The water goes in before the shores because `kohan.js` reads
      * `SHORE_GAPS` from it: four places the shore barrier is broken, each of which
      * has to have something to step onto.  A gap with nothing at it is a hole. */
-    buildLake(ctx),
-    buildLakeRoad(ctx),
-    buildKohan(ctx),
-    buildApproach(ctx),
-    buildShrine(ctx),
-    buildShotengai(ctx),
-    buildCanal(ctx, train),
-    buildOverbridge(ctx),
-    buildRestCorner(ctx),
-    buildLibrary(ctx),
-    buildNorthBlock(ctx),
-    buildMatsuri(ctx),
-    buildOnsen(ctx),
-    buildAlleys(ctx),
+    ['ひばり湖', () => buildLake(ctx)],
+    ['ひばり湖への道', () => buildLakeRoad(ctx)],
+    ['ひばり湖畔', () => buildKohan(ctx)],
+    ['通学路', () => buildApproach(ctx)],
+    ['桜守神社', () => buildShrine(ctx)],
+    ['さくら坂商店街', () => buildShotengai(ctx)],
+    ['用水路', () => buildCanal(ctx, train)],
+    ['跨線橋', () => buildOverbridge(ctx)],
+    ['自販機の休み処', () => buildRestCorner(ctx)],
+    ['ひばり台図書館', () => buildLibrary(ctx)],
+    ['ひばり台三丁目', () => buildNorthBlock(ctx)],
+    ['夏まつり', () => buildMatsuri(ctx)],
+    ['湯の坂', () => buildOnsen(ctx)],
+    ['路地', () => buildAlleys(ctx)],
     /* The residential blocks run after every district whose surfaces they sit
      * against -- 一丁目 wants the canal's verge pad to derive its step rises
      * from, 四丁目 arrives off the library's corner pad, 公園前 measures itself
      * off the overbridge -- and before `buildDistrict`, so the housing sweep
      * seats its clutter on the lanes these lay rather than on the bare grade. */
-    buildIchome(ctx),
-    buildNichome(ctx),
-    buildYonchome(ctx),
-    buildKoenmae(ctx),
-    buildTsugakuro(ctx),
-    buildUramachi(ctx),
-    buildGakkomae(ctx),
-    buildKawabata(ctx),
+    ['ひばり台一丁目', () => buildIchome(ctx)],
+    ['ひばり台二丁目', () => buildNichome(ctx)],
+    ['ひばり台四丁目', () => buildYonchome(ctx)],
+    ['公園前', () => buildKoenmae(ctx)],
+    ['ひばり台五丁目', () => buildTsugakuro(ctx)],
+    ['桜守裏町', () => buildUramachi(ctx)],
+    ['学校前通り', () => buildGakkomae(ctx)],
+    ['川端の道', () => buildKawabata(ctx)],
     /* ひばり台六丁目 runs after 二丁目 and 三丁目 and it has to: every surface
      * in it is paved to the height of the north T those two lay between them,
      * and it reads that height off `ctx.groundAt` rather than assuming it. */
-    buildRokuchome(ctx),
+    ['ひばり台六丁目', () => buildRokuchome(ctx)],
     /* ひばり台七丁目 runs after 湯の坂 (it builds against the terrace's north
      * retaining wall and puts a flight through the gap in it) and after
      * 桜守裏町 (its footpath east lands on that block's arm), and before
      * `buildDistrict` like every other block. */
-    buildNanachome(ctx),
-    buildDistrict(ctx, { houses: houseDefs }),
+    ['ひばり台七丁目', () => buildNanachome(ctx)],
+    ['町の仕上げ', () => buildDistrict(ctx, { houses: houseDefs })],
     /* The motor vehicles run after every surface in the world is laid, because
      * a car is seated with `ctx.groundAt` and half of them stand on a lane, an
      * apron or a bay that a district module put down -- and it runs after the
@@ -322,12 +380,18 @@ export function buildWorld(scene) {
      * on purpose; what has to be right about it is the distribution over the
      * whole map, and a distribution cannot be reviewed thirty lines at a time
      * in twenty-two modules. */
-    buildTraffic(ctx),
-    buildDetails(ctx),
+    ['駐車', () => buildTraffic(ctx)],
+    ['細部', () => buildDetails(ctx)],
   ];
+  const districts = [];
+  for (const [label, build] of districtBuilders) {
+    await step(label);
+    districts.push(build());
+  }
   for (const d of districts) if (d.update) ctx.update(d.update);
   const extraSakura = districts.flatMap((d) => d.sakura ?? []);
   const extraShrubs = districts.flatMap((d) => d.shrubs ?? []);
+  await step('雑木林');
   buildGrove(ctx, districts.flatMap((d) => d.grove ?? []));
   /* The 杉林 merges the same way the grove does -- one baked stem mesh and three
    * instanced crowns for every plantation in the world -- so it has to run here
@@ -347,6 +411,7 @@ export function buildWorld(scene) {
    * variety back into one estate built in one go.  The two new types
    * (`buildings.js`) report their own overall height, so the collider does not
    * have to know which one it got. */
+  await step('塀と垣');
   const FENCE_KIND = { timber: makeTimberFence, block: makeBlockFence };
   const walls = [
     { x: -9.9, z: 12.6, len: 7.2, axis: 'z', h: 0.72, kind: 'block' },
@@ -411,6 +476,7 @@ export function buildWorld(scene) {
    * With the frontage held back there is an open corridor between the street
    * and the railway fence.  It gets a footpath, an allotment and a shed --
    * everything low enough to keep the sight line down the track clear.      */
+  await step('沿線の畑');
   {
     const pathMat = cel({ color: PAL.concrete, bands: 3, tint: 0x6f6790 });
     const path = box(26.0, 0.07, 1.15, pathMat, -17.5, 0.035, 4.35);
@@ -444,6 +510,7 @@ export function buildWorld(scene) {
   }
 
   /* ------------------------------ cherry trees ------------------------------ */
+  await step('桜');
   const sakuraSpots = [
     // The trees that frame the opening shot.  The third one stands just behind
     // the camera: it never appears in frame, but its cast shadow rakes across
@@ -509,6 +576,7 @@ export function buildWorld(scene) {
   buildSakura(ctx, sakuraSpots);
 
   /* -------------------------------- shrubbery -------------------------------- */
+  await step('植込み');
   buildShrubs(ctx, [
     { x: -6.4, z: 6.6, r: 0.5, count: 4, spread: 1.2, seed: 201, y: groundY(6.6) },
     { x: -5.7, z: 12.4, r: 0.45, count: 3, spread: 1.0, seed: 202, y: groundY(12.4) },
@@ -525,6 +593,7 @@ export function buildWorld(scene) {
   ].concat(extraShrubs));
 
   /* ------------------------------ utility poles ------------------------------ */
+  await step('電柱と電線');
   const poleDefs = [
     { x: -3.86, z: 4.55, h: 9.4, seed: 301, lamp: true, armDir: 1 },
     { x: -4.35, z: 14.2, h: 9.0, seed: 302, armDir: 1, baseSink: 0.02 },
@@ -591,6 +660,7 @@ export function buildWorld(scene) {
   }
 
   /* ------------------------- the crossing corner cluster ------------------------- */
+  await step('踏切の角');
   const walkY = (z) => groundY(z) + WALK_H;
 
   // convex mirror watching the crossing
@@ -685,6 +755,7 @@ export function buildWorld(scene) {
   }
 
   /* --------------------------------- petals --------------------------------- */
+  await step('花びら');
   const petals = buildPetals(ctx);
 
   /* No outer boundary any more -- the world has no edge to fall off. */
@@ -734,8 +805,17 @@ export function buildWorld(scene) {
   /* ------------------------- project onto the planet -------------------------
    * Runs last, once every builder has finished. Everything above this line is
    * still authored on a flat plane and has no idea the planet exists.       */
+  await step('球体に投影');
   const bakeStats = bakeToPlanet(root, { maxEdge: 4.0 });
   train.planetize();
+
+  /* The bar's last frame.  Also the check that `TOTAL` still matches the number
+   * of `step()` calls above -- it is a constant a hundred lines from most of
+   * them, so it will drift, and a bar that stops at 0.93 is the symptom. */
+  onProgress?.(1, '');
+  if (import.meta.env?.DEV && stepsDone !== TOTAL) {
+    console.warn(`buildWorld: TOTAL is ${TOTAL}, ${stepsDone} steps ran`);
+  }
 
   /* ------------------------------- world api ------------------------------- */
   const world = {

@@ -201,11 +201,15 @@ function makeQuad(def) {
 }
 
 export class Pipeline {
-  constructor(renderer, scene, camera, { pixelBudget = 4.6e6 } = {}) {
+  constructor(renderer, scene, camera, { pixelBudget = 4.6e6, maxScale = 2 } = {}) {
     this.renderer = renderer;
     this.scene = scene;
     this.camera = camera;
     this.pixelBudget = pixelBudget;
+    /** Ceiling on the supersample.  A phone's screen is 400 px wide and its
+     *  device ratio is 3: rendering it at 2x is six times the pixels of
+     *  anything anyone can resolve, and the ink pass is already crisp at 1.25. */
+    this.maxScale = maxScale;
     this.size = new THREE.Vector2(1, 1);
 
     const opts = {
@@ -242,7 +246,8 @@ export class Pipeline {
   /** Resolution scale: supersample a little on low-DPI screens for clean ink. */
   setSize(w, h) {
     const dpr = window.devicePixelRatio || 1;
-    let scale = this.forceScale || (dpr < 1.5 ? 1.5 : Math.min(dpr, 2));
+    let scale = this.forceScale
+      || Math.min(this.maxScale, dpr < 1.5 ? 1.5 : Math.min(dpr, 2));
     if (w * h * scale * scale > this.pixelBudget) {
       scale = Math.max(1, Math.sqrt(this.pixelBudget / (w * h)));
     }

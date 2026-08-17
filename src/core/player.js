@@ -67,6 +67,19 @@ export class Player {
     this.vel = new THREE.Vector3();
     this.bob = 0;
     this.locked = false;
+    /**
+     * Touch input, filled by `core/touch.js`.
+     *
+     * `touchMode` is the second way to be *playing*: the whole input path
+     * used to be gated on `locked`, which is pointer lock, which no phone
+     * has -- so on a phone the game started and then ignored everything.
+     * Every gate below asks `active` instead, and `active` is either.
+     *
+     * `x` and `y` are the stick, -1 to 1, and they are analogue: a thumb
+     * half way out walks at half pace.
+     */
+    this.touchMode = false;
+    this.touch = { x: 0, y: 0, run: false };
     this.keys = new Set();
     this.walkSpeed = 2.55;
     this.runSpeed = 5.1;
@@ -132,8 +145,26 @@ export class Player {
     window.addEventListener('blur', () => this.keys.clear());
   }
 
+  /** Playing, by either route: pointer lock on a desktop, the pad on a phone. */
+  get active() {
+    return this.locked || this.touchMode;
+  }
+
   lock() {
     this.dom.requestPointerLock?.();
+  }
+
+  /** Look, in radians -- what a touch drag produces instead of mouse counts. */
+  look(dx, dy) {
+    this.yaw -= dx;
+    this.pitch = clamp(this.pitch - dy, -1.15, 1.05);
+  }
+
+  /** The stick.  Called on every change, including the release to (0, 0). */
+  setMove(x, y, run) {
+    this.touch.x = x;
+    this.touch.y = y;
+    this.touch.run = !!run;
   }
 
   reset() {
@@ -190,15 +221,17 @@ export class Player {
   update(dt) {
     const k = this.keys;
     const riding = this.ride !== null;
-    const sprint = k.has('ShiftLeft') || k.has('ShiftRight');
+    const sprint = k.has('ShiftLeft') || k.has('ShiftRight') || this.touch.run;
     const speed = riding ? this.rideSpeed : (sprint ? this.runSpeed : this.walkSpeed);
 
     let fwd = 0, side = 0;
-    if (this.locked) {
+    if (this.active) {
       if (k.has('KeyW') || k.has('ArrowUp')) fwd += 1;
       if (k.has('KeyS') || k.has('ArrowDown')) fwd -= 1;
       if (k.has('KeyD') || k.has('ArrowRight')) side += 1;
       if (k.has('KeyA') || k.has('ArrowLeft')) side -= 1;
+      fwd = clamp(fwd + this.touch.y, -1, 1);
+      side = clamp(side + this.touch.x, -1, 1);
     }
 
     /* On the machine A and D steer rather than strafe.  A scooter that slides
@@ -219,7 +252,14 @@ export class Player {
       this._wish
         .copy(this._forward).multiplyScalar(fwd)
         .addScaledVector(this._right, side);
-      if (this._wish.lengthSq() > 1e-6) this._wish.normalize().multiplyScalar(speed);
+      /* Clamped rather than normalised, which is the change the analogue
+       * stick needed: normalising sends a thumb a third of the way out at
+       * full walking pace, and there is nothing else in the game that gives
+       * you a slow walk.  Two keys still make a diagonal of length root two
+       * and still come out at exactly `speed`, so nothing about the keyboard
+       * moves. */
+      const len = this._wish.length();
+      if (len > 1e-3) this._wish.multiplyScalar((speed * Math.min(1, len)) / len);
     }
 
     /* Critically-damped approach to the wish velocity: responsive but never

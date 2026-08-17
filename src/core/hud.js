@@ -66,7 +66,7 @@ export function createHud({ volume = 0.34 } = {}) {
           The scene is waiting where you left it. Adjust the music volume,
           then continue your walk when you're ready.
         </p>
-        <div class="control-strip">
+        <div class="control-strip keys-only">
           <span><b>WASD</b> Move</span>
           <span><b>Mouse</b> Look</span>
           <span><b>E</b> Interact</span>
@@ -74,6 +74,17 @@ export function createHud({ volume = 0.34 } = {}) {
           <span><b>V</b> E-Bike</span>
           <span><b>M</b> Music</span>
           <span><b>C</b> Coordinates</span>
+        </div>
+        <!-- Swapped for the one above by a coarse-pointer query.  A phone
+             being told to press Shift is the same class of mistake as a phone
+             being handed a pointer lock. -->
+        <div class="control-strip touch-only">
+          <span><b>◀▶</b> Left thumb walks</span>
+          <span><b>↕</b> Push far to run</span>
+          <span><b>◎</b> Right thumb looks</span>
+          <span><b>E</b> Interact</span>
+          <span><b>V</b> E-Bike</span>
+          <span><b>☰</b> Pause</span>
         </div>
         <label class="audio-control pause-only pause-stack">
           <span class="audio-head">

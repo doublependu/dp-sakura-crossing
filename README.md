@@ -51,6 +51,15 @@ modules, so it needs to be served over HTTP.
 | `Esc` | release the cursor |
 | `O` / `G` | toggle the ink pass / the colour grade (to see what they do) |
 
+**On a phone or a tablet** the same game is played with two thumbs. There is no
+pointer lock on a touch device — which is why the game used to load, draw
+perfectly and then ignore every tap — so the start card turns on a pad instead:
+the left half of the screen is a stick that appears wherever the thumb lands,
+the right half is drag-to-look, and the buttons sit under the right thumb. The
+stick is **analogue**, so how far it is pushed is how fast you walk; push it
+into the ring to run. `E` and `V` are at the bottom right, `☰` `P` `♪` at the
+top. Nothing is drawn until it is touched.
+
 The background-music playlist shuffles the tracks in `public/audio/`, plays each
 one once per round, then reshuffles without repeating the last track. Browsers
 block autoplay, so it starts on the click that
@@ -65,11 +74,22 @@ that folder is git-ignored except the shipped track, so a personal collection
 cannot be committed by accident. An empty playlist is a supported state — the
 world just runs in silence.
 
-Interactables: **twenty-two** things answer `E` — nineteen vending machines
+Interactables: **thirty-six** things answer `E` — twenty-one vending machines
 dispense a can (two of them スーパー さかえ's), the shop shutter rolls up and
-down, the cat stretches, and the relay box on the far corner calls a train.
+down, the cat on the garden wall stretches, the relay box on the far corner
+calls a train, and each of the twelve animals will turn round and say hello.
 Otherwise a train comes through on its own every 35–45 seconds — bells and lamps
 first, then the booms, then the train.
+
+**動物たち.** Twelve animals live in the town — a cat in the back alley behind
+the shopping street, a dog in the park, a fox in the shrine precinct, a boar on
+the lane by the water, two deer out by the lake and in the cedar glade, and
+others. They wander in arcs rather than along paths, stop to look around, graze,
+and once in a very long while dance. They mind being *rushed* rather than being
+near: walk up slowly and one will let you get to arm's length, run at it — or
+ride the machine at it — and it is gone. There are still **no people anywhere**,
+which is a rule this world keeps rather than an omission; an animal crossing the
+road ahead of you is weather.
 
 **電動バイク.** `V` stands one in front of you — a 原付, the same machine twelve
 of which are parked around the town, painted a warm coral so you can find it at
@@ -760,8 +780,11 @@ src/
     outline.js         inverted-hull outlines for hero props
     sky.js             gradient dome, flat cel clouds, distant ridges
     textures.js        all signage/paint/petal masks, drawn with Canvas2D
-    player.js          pointer-lock walker, AABB collision, interaction ray
+    player.js          the walker: pointer lock *or* thumbstick, AABB collision,
+                       interaction ray
     hud.js             start card, crosshair, prompt, hint, toast
+    touch.js           the phone's controls: floating stick, drag-to-look, buttons
+    boot.js            the loading screen's needle -- its markup is in index.html
     audio.js           looping music playlist, gesture-gated, timer-based fades
     util.js            geometry baking, seeded RNG, small helpers
   world/
@@ -823,9 +846,12 @@ src/
     trees.js           cherry trees, shade trees, cedar plantation, bamboo, shrubs
     petals.js          falling blossom, fallen blossom, scattered patches
     props.js           poles, wires, mirror, kei truck, bicycles, jizo, cat…
+    pets.js            the animals: loading and material swap, the wander, the
+                       twelve homes -- built after the bake, like the e-bike
 ```
 
-The music playlist in `public/audio/` contains the only binary assets. Everything
+The music playlist in `public/audio/` and the ten animals in
+`public/models/pets/` are the only binary assets. Everything
 visual is generated: every texture is drawn with Canvas2D at start-up and all
 geometry is procedural, so the scene renders with nothing but `three` installed. Every
 Japanese string is invented (青空商店, ひばり台, さくら坂商店街, 桜守神社, 松の湯,
@@ -891,12 +917,19 @@ front of `JP_FONT`.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). That covers everything in `src/`, which is the
-whole of the artwork too: the world is entirely procedural geometry and
-procedurally drawn textures, so there is no separate asset licence to worry
-about.
+MIT — see [LICENSE](LICENSE). That covers everything in `src/`, which is very
+nearly the whole of the artwork too: the town is entirely procedural geometry
+and procedurally drawn textures, and the two exceptions are both in `public/`.
 
-**Except the audio.** `public/audio/` carries one track,
+**The animals.** `public/models/pets/` carries ten models from Kenney's
+[Cube Pets](https://kenney.nl/assets/cube-pets) kit, which is **CC0** — public
+domain, no attribution required, credited here because it is the decent thing
+to do. They are the only imported geometry in the project, and every material
+on them is replaced with `cel()` at load: an untouched glTF renders as a
+photograph pasted onto a painting. The palette atlas beside them is theirs and
+is kept, because on these models the texture *is* the colour.
+
+**The audio.** `public/audio/` carries one track,
 `bfcmusic-divine-sakura-garden-fairytale-music-283353.mp3`, which is stock
 music and not covered by the MIT licence above — check its own terms before
 redistributing it. Anything else you put in that folder is yours to sort out;
