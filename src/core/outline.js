@@ -100,6 +100,13 @@ export function hullOutline(mesh, { thickness = 0.0038, color = PAL.ink, opacity
   shell.receiveShadow = false;
   shell.renderOrder = (mesh.renderOrder || 0) - 1;
   shell.frustumCulled = mesh.frustumCulled;
+  /* Says what it is, so the build's merge pass can refuse it by name rather
+   * than by guessing from its shape.  A shell is welded to one mesh and shares
+   * its visibility; lifted out into a merged block it goes on outlining
+   * something that has moved or gone.  `hullOutlineTree` has always tagged the
+   * shells it makes -- this is the same tag, for the callers that ask for one
+   * shell at a time. */
+  shell.userData.isOutline = true;
   mesh.add(shell);
   return shell;
 }

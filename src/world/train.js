@@ -371,6 +371,15 @@ export function buildTrain(ctx) {
   const group = new THREE.Group();
   group.name = 'train';
   group.visible = false;
+  /* The cars below carry no rig marker -- their geometry is bent into root
+   * space by the bake like any wall, which is what lets `update` move the whole
+   * train with one rotation about the planet axis.  That makes every *local*
+   * test for "is this static" pass on them, so the build's merge pass has to be
+   * told here, at the one place that knows: everything under this group is
+   * driven.  Without it the ink shells and body panels are lifted into a static
+   * block and left standing at the crossing while the train drives through. */
+  group.userData.noMerge = true;
+  group.userData.noFreeze = true;
   ctx.add(group);
 
   const wheels = [];

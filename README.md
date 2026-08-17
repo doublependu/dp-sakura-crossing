@@ -863,7 +863,7 @@ bus's route diagram and the mark on the telephone box.
 Static geometry is merged per material (`bake()` in `util.js`) and repeated
 elements — sleepers, fence bars, blossom clusters, cedar whorls, petals, parked
 bicycles, ema plaques, reeds, ivy — are instanced. The scene holds **6.38 M
-triangles**, and after the build's submission passes it holds them in **5 100
+triangles**, and after the build's submission passes it holds them in **7 600
 meshes rather than 21 100**. It is draw-call bound, not fill bound — halving the
 internal resolution changes nothing at all (91.5 ms against 91.8 ms), and the
 right question to ask about any new geometry is how many draw calls it is rather
@@ -884,16 +884,18 @@ cannot move earlier:
 
 | | before | after |
 | --- | --- | --- |
-| objects in the scene graph | 23 955 | 7 963 |
-| meshes | 21 106 | 5 114 |
+| objects in the scene graph | 23 955 | 10 493 |
+| meshes | 21 106 | 7 644 |
 | material objects | 3 979 | 1 187 |
-| shadow casters | 10 009 | 2 800 |
-| draw calls, standing at the crossing | 5 681 | 2 216 |
-| the scene pass, standing at the crossing | 76.7 ms | 23.3 ms |
+| shadow casters | 10 009 | 4 036 |
+| draw calls, standing at the crossing | 5 681 | 2 799 |
+| the scene pass, standing at the crossing | 76.7 ms | 21.5 ms |
 | triangles in the scene | 6 384 128 | 6 384 128 |
 
 The last row is the point: **nothing was removed**. The same geometry is
-submitted in a third of the calls.
+submitted in half the calls. Walking the five viewpoints above with the start
+card down, that is **15.5 fps to 41.1** on an RTX 3060 at 1600x900 (2400x1350
+internal) — 11.9 to 30.1 at the crossing, 16.7 to 46.8 at the shrine.
 
 - **`dedupeMaterials`** collapses 3 979 material objects onto 1 132 distinct
   ones and frees the 2 794 duplicates. The draw call count does not change; what
@@ -902,7 +904,8 @@ submitted in a third of the calls.
   crossing lamps — calls `markDynamicMaterial` and is left alone, because
   sharing an animated material blinks everything that happens to be the same
   colour.
-- **`mergeStatic`** concatenates static geometry per material per 96 m cell.
+- **`mergeStatic`** concatenates static geometry per material per 96 m cell,
+  14 833 meshes into 1 371.
   Merging by material alone would be fewer meshes still and *slower*, because
   each one would span the district and cull from nowhere. The grid keeps both
   properties. Hitboxes, rigs, transparent materials and anything with children
@@ -970,6 +973,42 @@ Two things that sound like fixes and are not, both measured: pulling the far
 plane in from 600 m to the fog wall at 205 m saved two draw calls, and halving
 the shadow map resolution changed nothing, because neither pixels nor the depth
 range were ever the cost.
+
+### The trap in all of this
+
+"Its geometry is in root space and its transform is the identity" is a **local**
+test, and every mesh in the train passes it. The train is three cars of ordinary
+baked geometry under one group, and the whole thing moves by a single rotation
+written onto that group in `update()` — no marker on the cars, nothing to see
+from the mesh itself. So the first version of the merge lifted nine ink shells
+and four body panels out of the rig into a static block, and left them standing
+at the crossing as a **black train** while the real one drove through it.
+
+The fix is `drivenFromAbove` in `perf.js`: walk the ancestors, and refuse the
+mesh if any of them is a rig, says `noMerge`, or has `matrixAutoUpdate` off —
+which in this codebase means something writes that matrix by hand every frame.
+`bakeToPlanet` has always walked ancestors for exactly this reason (its
+`underRigid`); anything that reasons about whether a mesh is static has to do
+the same. An inverted-hull shell is refused outright now as well: it is welded
+to one mesh and shares its visibility, so detaching it means it outlines
+something that has moved or gone.
+
+Worth knowing how it was missed, because the evidence was there. A screenshot
+diff against the unmodified build flagged the crossing at 24.8 mean error while
+every other viewpoint sat under 0.5 — and that got written off as the train
+being at a different point in its cycle, which is a real and expected
+difference at that one viewpoint. It was a train. It was the wrong train. The
+lesson is that "this viewpoint has a known moving object in it" is a reason to
+take the moving object *out* and look again, not a licence to stop looking: with
+the train, animals and petals hidden the same comparison reads 0.35, and it read
+24.8 for as long as the bug was there.
+
+The other half of the answer is `createFreezeAudit`, which dev builds run at 6 s
+and 45 s. It watches the subtrees `freezeStatic` actually switched off — not
+everything with the flag clear, or it reports the train, which drives its own
+matrix on purpose — and it compares `matrix` as well as position and rotation,
+because a rig moved by a hand-written matrix looks perfectly still from the
+decomposed fields.
 
 ## Dev note
 

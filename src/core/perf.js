@@ -14,26 +14,39 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
  * Halving the internal resolution changes nothing (91.5 ms against 91.8 ms),
  * pulling the far plane in to the fog wall changes nothing (two draw calls),
  * and a smaller shadow map changes nothing.  None of those are the cost.  The
- * count of things submitted is the cost, so all three passes below reduce a
+ * count of things submitted is the cost, so all four passes below reduce a
  * count:
  *
- *   `dedupeMaterials`  3 979 material objects -> ~930.  Same draw calls, but
+ *   `dedupeMaterials`  3 979 material objects -> 1 132.  Same draw calls, but
  *                      each one that shares its material with the last skips a
  *                      uniform upload and a state change.  Worth 12 ms, and it
  *                      is also what makes the merge below able to see that two
  *                      meshes in different districts are the same grey.
- *   `mergeStatic`      20 600 static meshes -> a few thousand, grouped by
- *                      material and by a spatial cell so frustum culling still
- *                      has something to throw away.  The colour pass and the
- *                      shadow pass both draw these, so both get shorter.
- *   `freezeStatic`     23 700 objects whose matrix is the identity and will
+ *   `mergeStatic`      14 800 static meshes -> 1 371, grouped by material and by
+ *                      a 96 m cell so frustum culling still has something to
+ *                      throw away.  The colour pass and the shadow pass both
+ *                      draw these, so both get shorter.
+ *   `cullInstanced`    362 of 392 instance clouds cull again, on a bound derived
+ *                      from their own matrices rather than from their geometry.
+ *   `freezeStatic`     13 000 objects whose matrix is the identity and will
  *                      never change again, and which three re-derives on every
- *                      frame.  Worth 8-11 ms of pure main thread.
+ *                      frame.  Worth 8 ms of pure main thread.
  *
- * All three run after `bakeToPlanet`, and they depend on what it leaves
+ * Together: 21 106 meshes -> 7 644, and standing at the crossing 5 681 draw
+ * calls -> 2 799 and a 76.7 ms scene pass -> 21.5 ms.  The triangle count is
+ * unchanged at 6 384 128 either side, which is the point -- nothing is removed,
+ * the same geometry is submitted in fewer calls.
+ *
+ * All four run after `bakeToPlanet`, and they depend on what it leaves
  * behind: every static mesh has an identity transform with its geometry in
  * root space.  That is what makes a merge a concatenation rather than a
  * re-projection, and it is why none of this can move earlier in the build.
+ *
+ * The one thing to be careful about, and the one that got away: "its geometry
+ * is in root space and its transform is the identity" is a *local* test, and
+ * passing it does not mean nothing is moving the mesh.  The train's three cars
+ * pass it perfectly, and the whole train is moved by one rotation written onto
+ * the group above them.  See `drivenFromAbove`.
  * ------------------------------------------------------------------ */
 
 /* ------------------------------ dedupe ------------------------------ */
@@ -168,15 +181,52 @@ export function dedupeMaterials(root) {
 /* ------------------------------- merge ------------------------------- */
 
 /**
+ * Is anything above this object driving it?
+ *
+ * A merged block is parented to the root with no transform of its own, so
+ * lifting a mesh into one is only sound if *nothing between it and the root*
+ * was moving it. Three ways an ancestor can be:
+ *
+ *  - it is a **rig** (`planetRigid`), which the bake re-seated and left intact;
+ *  - it says **`noMerge`**, which is how anything else declares itself driven;
+ *  - it has **`matrixAutoUpdate` off**, which in this codebase means exactly one
+ *    thing: something writes that matrix by hand every frame.
+ *
+ * The last one is the general case and the reason this function exists. The
+ * train is three cars under one group whose matrix is a rotation about the
+ * planet axis, written directly in `update()` -- the cars themselves carry no
+ * marker at all, and their geometry really is in root space, so every local
+ * test on them passes. Nine ink shells and four body panels were lifted out
+ * into a static block and left standing at the crossing as a black train while
+ * the real one drove through it.
+ *
+ * `bakeToPlanet` has always walked ancestors for this (its `underRigid`); the
+ * merge has to as well.
+ */
+function drivenFromAbove(o, root) {
+  for (let p = o.parent; p && p !== root.parent; p = p.parent) {
+    if (p.userData?.planetRigid || p.userData?.noMerge) return true;
+    if (p.matrixAutoUpdate === false) return true;
+    if (p === root) return false;
+  }
+  return false;
+}
+
+/**
  * Which meshes may be concatenated with their neighbours.
  *
  * The rule is conservative on purpose. Anything that another system holds a
  * reference to, animates, sorts, or reads back has to survive as itself:
  *
  *  - **instanced** meshes are already one call for their whole cloud;
- *  - **rigid rigs** and their subtrees turn, slide and blink;
+ *  - **rigid rigs** and their subtrees turn, slide and blink -- and so does
+ *    anything under something that drives its own matrix, see `drivenFromAbove`;
  *  - anything with **children** is somebody's parent -- an outline shell hangs
  *    off its mesh, and a vending machine hangs its `E` hitbox off its body;
+ *  - anything whose **parent is a mesh** is a decoration *of* that mesh rather
+ *    than district geometry. An inverted-hull shell exists to be welded to one
+ *    specific mesh and to share its visibility; detach it and it outlines
+ *    something that is no longer there;
  *  - **hitboxes** are what the interaction raycast reads, and it identifies
  *    what you are looking at by which mesh was hit;
  *  - **transparent** materials are depth-sorted per object, and a cell-sized
@@ -185,12 +235,14 @@ export function dedupeMaterials(root) {
  *  - anything **not frustum culled** was excluded from culling deliberately
  *    (the sky dome, the petal cloud) and is not district geometry at all.
  */
-function mergeableMesh(o, skip) {
+function mergeableMesh(o, skip, root) {
   if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh) return false;
   if (skip.has(o)) return false;
   if (o.children.length) return false;
   if (!o.frustumCulled) return false;
   if (o.userData.noMerge || o.userData.planetRigid) return false;
+  if (o.userData.isOutline || o.parent?.isMesh) return false;
+  if (drivenFromAbove(o, root)) return false;
   if (o.morphTargetInfluences?.length) return false;
   if (!o.geometry || !o.geometry.attributes.position) return false;
   if (o.geometry.morphAttributes && Object.keys(o.geometry.morphAttributes).length) return false;
@@ -243,7 +295,7 @@ export function mergeStatic(root, { cell = 32, skip = new Set() } = {}) {
 
   root.traverse((o) => {
     if (!o.isMesh) return;
-    if (!mergeableMesh(o, skip)) { stats.skipped++; return; }
+    if (!mergeableMesh(o, skip, root)) { stats.skipped++; return; }
     stats.candidates++;
     const g = o.geometry;
     if (!g.boundingSphere) g.computeBoundingSphere();
@@ -396,7 +448,13 @@ export function freezeStatic(root, { skip = new Set() } = {}) {
    * the flag on a container that holds nothing live removes its whole subtree
    * from every future traversal in one go -- including the containers the merge
    * pass has just emptied. */
-  let frozen = 0, subtrees = 0;
+  let frozen = 0;
+  /* The tops of the subtrees this pass switched off.  Handed to
+   * `createFreezeAudit`, which has to watch what *this* froze and nothing else:
+   * the train group has had `matrixAutoUpdate` off since `planetize` and drives
+   * its own matrix on purpose, so an audit that went looking for the flag
+   * instead of for this list reported the train as a bug every time. */
+  const roots = [];
   const freeze = (o) => {
     o.matrixAutoUpdate = false;
     o.matrixWorldAutoUpdate = false;
@@ -413,13 +471,13 @@ export function freezeStatic(root, { skip = new Set() } = {}) {
       // their own flags, which no traversal will ever read again
       freeze(o);
       o.traverse((c) => { if (c !== o) frozen++; });
-      subtrees++;
+      roots.push(o);
     }
     return true;
   };
   for (const c of root.children) walk(c);
 
-  return { frozen, subtrees, dynamic: dynamic.size };
+  return { frozen, subtrees: roots.length, dynamic: dynamic.size, roots };
 }
 
 /**
@@ -435,20 +493,36 @@ export function freezeStatic(root, { skip = new Set() } = {}) {
  * let the world run, and anything whose transform has changed is either a rig
  * that wants `userData.planetRigid` or a prop that wants `userData.noFreeze`.
  */
-export function createFreezeAudit(root) {
+export function createFreezeAudit(frozenRoots = []) {
   const snap = [];
-  root.traverse((o) => {
-    if (o.matrixAutoUpdate === false || o.matrixWorldAutoUpdate === false) {
-      snap.push({ o, p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() });
-    }
-  });
+  for (const top of frozenRoots) {
+    top.traverse((o) => {
+      snap.push({
+        o,
+        p: o.position.clone(),
+        q: o.quaternion.clone(),
+        s: o.scale.clone(),
+        /* The matrix itself as well, because a rig does not have to go through
+         * position and quaternion to move: the train writes `group.matrix`
+         * directly, and watching only the decomposed fields would report it as
+         * perfectly still while it drove past. */
+        m: o.matrix.elements.slice(),
+      });
+    });
+  }
   return {
     watched: snap.length,
     /** @returns the frozen objects something has moved since the snapshot. */
     check() {
       const moved = [];
-      for (const { o, p, q, s } of snap) {
-        if (o.position.distanceTo(p) > 1e-6
+      for (const { o, p, q, s, m } of snap) {
+        const e = o.matrix.elements;
+        let matrixMoved = false;
+        for (let i = 0; i < 16; i++) {
+          if (Math.abs(e[i] - m[i]) > 1e-6) { matrixMoved = true; break; }
+        }
+        if (matrixMoved
+          || o.position.distanceTo(p) > 1e-6
           || Math.abs(o.quaternion.dot(q)) < 1 - 1e-6
           || o.scale.distanceTo(s) > 1e-6) moved.push(o);
       }

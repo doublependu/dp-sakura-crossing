@@ -491,7 +491,7 @@ async function main() {
      * failure is silent and looks like nothing at all, so it is worth a timer.
      * Two samples: one soon, for anything driven continuously, and one after
      * the train has been round and the gates have worked. */
-    const audit = createFreezeAudit(world.root);
+    const audit = createFreezeAudit(world.perfStats?.freeze?.roots);
     const report = () => {
       const moved = audit.check();
       if (!moved.length) return;
