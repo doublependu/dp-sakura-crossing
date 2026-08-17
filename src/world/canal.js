@@ -758,6 +758,11 @@ function buildWater(ctx, train) {
   streak.rotation.x = -Math.PI / 2;
   streak.position.set(DC, WATER_Y + 0.028, Z_C - 0.3);
   streak.userData.noOutline = true;
+  /* The updater below drives this one's position and scale every frame, so it
+   * has to keep its own matrix.  See `freezeStatic` in `perf.js`: the build
+   * switches matrix updates off for everything it can prove will never move
+   * again, and a mesh that is written to but not marked simply stops moving. */
+  streak.userData.noFreeze = true;
   streak.renderOrder = 5;
   ctx.add(streak);
 
@@ -768,6 +773,7 @@ function buildWater(ctx, train) {
   stripe.rotation.x = -Math.PI / 2;
   stripe.position.set(DC, WATER_Y + 0.032, Z_C - 0.05);
   stripe.userData.noOutline = true;
+  stripe.userData.noFreeze = true;   // driven per frame, like the streak above
   stripe.renderOrder = 6;
   ctx.add(stripe);
 

@@ -862,32 +862,114 @@ bus's route diagram and the mark on the telephone box.
 
 Static geometry is merged per material (`bake()` in `util.js`) and repeated
 elements — sleepers, fence bars, blossom clusters, cedar whorls, petals, parked
-bicycles, ema plaques, reeds, ivy — are instanced. The scene is about **1.74 M
-triangles across 19 000 meshes**; it was 859 k across 6 600 before the six
-residential blocks, the supermarket and the hills. It is draw-call bound, not fill
-bound — halving the internal resolution changes nothing at all, and the right
-question to ask about any new geometry is how many draw calls it is rather than
-how many triangles.
+bicycles, ema plaques, reeds, ivy — are instanced. The scene holds **6.38 M
+triangles**, and after the build's submission passes it holds them in **5 100
+meshes rather than 21 100**. It is draw-call bound, not fill bound — halving the
+internal resolution changes nothing at all (91.5 ms against 91.8 ms), and the
+right question to ask about any new geometry is how many draw calls it is rather
+than how many triangles.
 
-Two things are never culled, and it is worth knowing why. Instanced meshes stay
-unculled on purpose (their bound would have to come from the instance cloud
-rather than the source geometry, and most of them span the district anyway). And
-anything **planet-scale** is unculled in effect, because after the bake its
-bounding sphere *is* the planet. That used to mean the railway and the drainage
-channel together, submitting about 900k triangles on every frame no matter where
-the camera pointed; the channel is a bounded reach now and culls like any other
-district, so the railway carries that cost alone. The reason the canal lays its
-coping, service paths and retaining kerb only over the hundred metres you can
-actually walk is older than that and still good practice.
+That is worth stating as a measurement rather than a belief, because it is easy
+to check and it decides everything else here. Time a frame with a `gl.finish()`
+around it and record both numbers: the time spent *submitting* the frame and the
+time spent *completing* it. At the crossing they were the same to two decimal
+places. The GPU was not busy. It was idle, waiting on a main thread issuing
+about six thousand draw calls at eight microseconds each — so every fix worth
+having reduces a count, and none of them touch a pixel.
 
-That last number only holds because of one line in `bakeToPlanet`: baked meshes
-are **frustum culled**. The bake leaves every mesh with an identity transform and
-its geometry in root space, so the geometry's own bounding sphere is already a
-world-space bound and the frustum test is exact. Drawing all five thousand of them
-every frame regardless of where the camera points cost about 8 ms — most of a
-frame. Instanced meshes stay unculled: their bound would have to come from the
-instance cloud rather than the source geometry, and most of them span the district
-anyway.
+Four of them run at the end of the build, in `perf.js`, once `bakeToPlanet` has
+left every static mesh with an identity transform and its geometry in root
+space. That precondition is what makes them cheap and safe, and it is why they
+cannot move earlier:
+
+| | before | after |
+| --- | --- | --- |
+| objects in the scene graph | 23 955 | 7 963 |
+| meshes | 21 106 | 5 114 |
+| material objects | 3 979 | 1 187 |
+| shadow casters | 10 009 | 2 800 |
+| draw calls, standing at the crossing | 5 681 | 2 216 |
+| the scene pass, standing at the crossing | 76.7 ms | 23.3 ms |
+| triangles in the scene | 6 384 128 | 6 384 128 |
+
+The last row is the point: **nothing was removed**. The same geometry is
+submitted in a third of the calls.
+
+- **`dedupeMaterials`** collapses 3 979 material objects onto 1 132 distinct
+  ones and frees the 2 794 duplicates. The draw call count does not change; what
+  changes is how often the renderer rebinds, and it was worth 12 ms on its own.
+  Anything whose uniforms are driven per frame — the bathhouse steam, the
+  crossing lamps — calls `markDynamicMaterial` and is left alone, because
+  sharing an animated material blinks everything that happens to be the same
+  colour.
+- **`mergeStatic`** concatenates static geometry per material per 96 m cell.
+  Merging by material alone would be fewer meshes still and *slower*, because
+  each one would span the district and cull from nowhere. The grid keeps both
+  properties. Hitboxes, rigs, transparent materials and anything with children
+  are excluded by name in `mergeableMesh`, and the one rule that is deliberately
+  absent is a check on `geometry.groups`: every `BoxGeometry` in three carries
+  six of them and this town is mostly boxes, so refusing them threw away 11 704
+  of 20 600 candidates. Groups only reach the renderer through an array
+  material, which is refused anyway.
+- **`cullInstanced`** gives each instance cloud the bound three's
+  `InstancedMesh.computeBoundingSphere` derives from its own matrices, so the
+  frustum test on it is exact rather than approximate, and turns culling back
+  on for 362 of the 392. The petals keep it off and say why by marking their
+  instance matrix `DynamicDrawUsage` — a bound recomputed once is stale the
+  moment they drift.
+- **`freezeStatic`** clears `matrixWorldAutoUpdate` on whole inert subtrees.
+  Clearing `matrixAutoUpdate` alone buys nothing measurable (8.39 ms against
+  8.65 ms) because the renderer still descends into all twenty-three thousand
+  objects to ask; `updateMatrixWorld` skips a child with the *world* flag clear
+  without descending, so freezing high up removes the visit as well as the
+  arithmetic. 8.4 ms to 0.6 ms.
+
+The shadow map is a second pass over the same geometry and was costing 23 ms of
+a 78 ms frame, redrawing ten thousand casters every frame to recentre a 68 m
+cascade by however far a walker moves in one. `createShadowBudget` snaps the
+cascade to a 2 m grid — which is what the comment in `main.js` always claimed
+and the code never did, and which is also what stops cast shadows shimmering as
+you walk — and redraws when the snapped centre changes cells or every second
+frame, whichever comes first. The frame budget is not optional: the train, the
+booms and forty animals cast too, and their shadows must not freeze while you
+stand and watch. Measured at the crossing: 31 fps redrawing every frame, 38 at
+every second, 39 at every third. Half the frame rate is plenty for a moving
+shadow and the last value is not worth the lag.
+
+One trap worth writing down, because it is silent and it makes the frame rate
+look wonderful. `WebGLShadowMap.render` opens with
+
+```js
+if ( scope.autoUpdate === false && scope.needsUpdate === false ) return;
+```
+
+where `scope` is the shadow map, not the light. With `renderer.shadowMap.autoUpdate`
+off, setting only `light.shadow.needsUpdate` never gets read — the pass returns
+before it reaches the light loop. That does not throttle the shadows, it removes
+them, and the only symptom is a faster game and a flatter picture. Set
+`renderer.shadowMap.needsUpdate` too.
+
+Two things are still never culled, and it is worth knowing why. A few instance
+clouds genuinely span the district — the sleepers run the whole railway — and a
+bound that size only costs time to answer yes, so `cullInstanced` leaves the 27
+of them alone. And anything **planet-scale** is unculled in effect, because
+after the bake its bounding sphere *is* the planet. That used to mean the railway
+and the drainage channel together, submitting about 900k triangles on every frame
+no matter where the camera pointed; the channel is a bounded reach now and culls
+like any other district, so the railway carries that cost alone. The reason the
+canal lays its coping, service paths and retaining kerb only over the hundred
+metres you can actually walk is older than that and still good practice.
+
+All of it rests on one line in `bakeToPlanet`: baked meshes are **frustum
+culled**. The bake leaves every mesh with an identity transform and its geometry
+in root space, so the geometry's own bounding sphere is already a world-space
+bound and the frustum test is exact. Drawing all of them every frame regardless
+of where the camera points cost about 8 ms — most of a frame.
+
+Two things that sound like fixes and are not, both measured: pulling the far
+plane in from 600 m to the fog wall at 205 m saved two draw calls, and halving
+the shadow map resolution changed nothing, because neither pixels nor the depth
+range were ever the cost.
 
 ## Dev note
 

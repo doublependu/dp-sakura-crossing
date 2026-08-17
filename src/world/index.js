@@ -14,6 +14,7 @@ import { buildSakura, buildShrubs, buildGrove, buildBamboo, buildCedar } from '.
 import { buildPetals, buildFallenPatches } from './petals.js';
 import { buildPlanet, bakeToPlanet, wrapX, reliefAt, CIRCUMFERENCE } from './planet.js';
 import { buildColliderGrid } from './colgrid.js';
+import { dedupeMaterials, mergeStatic, cullInstanced, freezeStatic } from '../core/perf.js';
 /* The hills are a *third* ground surface, over both the graded terrain grid and
  * the planet sphere, and they are added to the height queries here rather than
  * folded into `reliefAt` -- `buildPlanet` samples that one, and the sphere has to
@@ -89,7 +90,21 @@ import { creditPlate } from '../core/textures.js';
  * end -- so the build says so out loud in dev rather than leaving it to be
  * noticed.
  * ------------------------------------------------------------------ */
-const TOTAL = 45;
+const TOTAL = 46;
+
+/* Edge of the grid the static merge groups by, in metres.
+ *
+ * The trade is entirely one-sided in one direction and not in the other: this
+ * frame is bound by how many things are submitted and not by how many
+ * triangles they hold, so a bigger cell is free right up to the point where a
+ * block gets big enough that the frustum can no longer throw any of it away.
+ *
+ * Measured, standing at the crossing: 36 fps at 32 m, 45 at 64, 45 at 96, 47
+ * at 160.  The curve is flat past 96 and the far end of it is not free -- a
+ * 160 m block is most of the walkable world, so it is submitted from
+ * everywhere and the saving stops being a saving on any machine where those
+ * triangles cost something.  96 m is the last value that is all upside. */
+const MERGE_CELL = 96;
 
 /**
  * Hand the thread back for one frame.
@@ -852,6 +867,40 @@ export async function buildWorld(scene, onProgress = null) {
   const bakeStats = bakeToPlanet(root, { maxEdge: 4.0 });
   train.planetize();
 
+  /* --------------------------- submission budget ---------------------------
+   * Four passes that change nothing about the image and everything about what
+   * it costs to hand over.  They run here, and only here, because they all
+   * depend on what the bake leaves behind: identity transforms with the
+   * geometry in root space.  See the header of `perf.js` for the measurements
+   * that chose them -- the short version is that this frame is bound by the
+   * number of things submitted, not by pixels, triangles or shadow resolution.
+   *
+   * Order is load-bearing: the merge groups by material identity, so the dedupe
+   * has to have collapsed the duplicates first, and the freeze wants to see the
+   * graph the merge left rather than the one it was given. */
+  await step('まとめ');
+  const perfStats = {};
+  perfStats.dedupe = dedupeMaterials(root);
+  /* Hitboxes are excluded from the merge by identity: the interaction raycast
+   * reports which mesh it hit and looks the label up from that, so a hitbox
+   * fused into a hundred metres of kerb stops being findable. */
+  const hitboxes = new Set();
+  for (const i of interactables) if (i.hitbox) hitboxes.add(i.hitbox);
+  perfStats.merge = mergeStatic(root, { cell: MERGE_CELL, skip: hitboxes });
+  perfStats.cull = cullInstanced(root);
+  perfStats.freeze = freezeStatic(root);
+  if (import.meta.env?.DEV) {
+    const d = perfStats.dedupe, m = perfStats.merge, f = perfStats.freeze;
+    console.info(`perf: materials ${d.refs} refs over ${d.unique} objects -> `
+      + `${d.canonical} shared (${d.repointed} repointed, ${d.disposed} freed)`);
+    console.info(`perf: merged ${m.merged} static meshes -> ${m.produced} `
+      + `(${m.groups} groups, ${m.skipped} left alone)`);
+    console.info(`perf: froze ${f.frozen} objects in ${f.subtrees} subtrees`);
+    const c = perfStats.cull;
+    console.info(`perf: ${c.culled}/${c.total} instance clouds now cull `
+      + `(${c.spanning} span too far, ${c.dynamic} animate)`);
+  }
+
   /* The bar's last frame.  Also the check that `TOTAL` still matches the number
    * of `step()` calls above -- it is a constant a hundred lines from most of
    * them, so it will drift, and a bar that stops at 0.93 is the symptom. */
@@ -886,6 +935,10 @@ export async function buildWorld(scene, onProgress = null) {
     petals,
     planet,
     bakeStats,
+    /* What the submission passes did, for the same reason `bakeStats` is here:
+     * it is the first thing worth looking at from the console when a frame
+     * costs more than it should. */
+    perfStats,
     // the world wraps in x, so only latitude is bounded (short of the poles)
     bounds,
     /**

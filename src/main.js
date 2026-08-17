@@ -14,6 +14,7 @@ import { createEbike } from './world/ebike.js';
 import { buildNavGraph, LANDMARKS } from './world/landmarks.js';
 import { createPetLibrary, SPECIES_KEYS } from './world/petmodels.js';
 import { createPets, EAGER } from './world/pets.js';
+import { createShadowBudget, createFreezeAudit } from './core/perf.js';
 
 /* ------------------------------------------------------------------ *
  * Sakura Crossing -- entry point.
@@ -228,6 +229,14 @@ async function main() {
   const pipeline = new Pipeline(renderer, scene, camera,
     COARSE ? { pixelBudget: 2.1e6, maxScale: 1.25 } : {});
 
+  /* The shadow map, on a budget.  It is a second pass over ten thousand
+   * casters and it was redrawing all of them on every frame to recentre a
+   * 68 m cascade by however far a walker moves in one -- 23 ms of a 78 ms
+   * frame.  `createShadowBudget` redraws it when the snapped centre changes
+   * cells and at least every few frames, which is what keeps the train's
+   * shadow moving while the player stands still and watches it pass. */
+  const shadows = createShadowBudget(renderer, sun, { snap: 2.0, maxIdleFrames: 2 });
+
   function resize() {
     /* `visualViewport` rather than `innerHeight` where there is one: on a
      * phone the address bar slides in and out over the page and `innerHeight`
@@ -249,6 +258,7 @@ async function main() {
   /* --------------------------------- loop --------------------------------- */
   const clock = new THREE.Clock();
   const shadowTarget = new THREE.Vector3();
+  const fillTarget = new THREE.Vector3();
   const sunOffset = new THREE.Vector3();
   /** Sun direction, expressed in the player's local surface frame. */
   const SUN_LOCAL = new THREE.Vector3(-52, 62, 56);
@@ -282,6 +292,9 @@ async function main() {
     s.left = -half; s.right = half; s.top = half; s.bottom = -half;
     s.far = on ? R * 6 : 200;
     s.updateProjectionMatrix();
+    // the cascade just changed size by a factor of twenty; nothing in the
+    // existing map is reusable
+    shadows.invalidate();
     hud.setPlanetView(on);
   }
 
@@ -416,17 +429,30 @@ async function main() {
       hemi.position.set(0, 1, 0);
       seatLight(fill, FILL_LOCAL, { east: new THREE.Vector3(1, 0, 0), up: new THREE.Vector3(0, 1, 0), north: new THREE.Vector3(0, 0, 1) }, CENTER);
       bounce.visible = false;
+      shadows.update(CENTER);
     } else {
       bounce.visible = true;
       // Lighting is pinned to the local surface frame rather than to world
       // space: physically a cheat, but it keeps the district lit the same way
       // no matter how far round the planet you have walked.
       const b = basisAt(player.pos.x, player.pos.z);
-      positionAt(player.pos.x, 0, player.pos.z, shadowTarget);
+      /* Snapped, at last.  The cascade centre is quantised to a 2 m grid in
+       * authoring coordinates, which is both what stops the cast shadows
+       * shimmering as you walk (the comment at the top of this file has
+       * claimed it for a long time; the code did not do it) and what gives
+       * the shadow budget something discrete to notice. */
+      const snap = shadows.snap;
+      const sx = Math.round(player.pos.x / snap) * snap;
+      const sz = Math.round(player.pos.z / snap) * snap;
+      positionAt(sx, 0, sz, shadowTarget);
       seatLight(sun, SUN_LOCAL, b, shadowTarget);
-      seatLight(fill, FILL_LOCAL, b, shadowTarget);
-      seatLight(bounce, BOUNCE_LOCAL, b, shadowTarget);
+      /* The fill and the bounce cast nothing, so they can stay on the player
+       * rather than on the grid. */
+      positionAt(player.pos.x, 0, player.pos.z, fillTarget);
+      seatLight(fill, FILL_LOCAL, b, fillTarget);
+      seatLight(bounce, BOUNCE_LOCAL, b, fillTarget);
       hemi.position.copy(b.up);
+      shadows.update(shadowTarget);
     }
 
     // the sky dome is centred on the flat origin, so it has to trail the camera
@@ -461,6 +487,22 @@ async function main() {
   window.__setOutlineRes = setOutlineResolution;
 
   if (import.meta.env?.DEV) {
+    /* Watch for a prop the build froze that something still animates -- the
+     * failure is silent and looks like nothing at all, so it is worth a timer.
+     * Two samples: one soon, for anything driven continuously, and one after
+     * the train has been round and the gates have worked. */
+    const audit = createFreezeAudit(world.root);
+    const report = () => {
+      const moved = audit.check();
+      if (!moved.length) return;
+      console.warn(`perf: ${moved.length} frozen object(s) are being animated and `
+        + 'will not move on screen. Mark them `userData.noFreeze = true` (a prop) '
+        + 'or `userData.planetRigid = true` (a rig):',
+      moved.slice(0, 12).map((o) => o.name || `${o.type} in ${o.parent?.name || '?'}`));
+    };
+    setTimeout(report, 6000);
+    setTimeout(report, 45000);
+
     /**
      * Dev capture: render one frame at a fixed size and post it to the dev
      * server, so framing and colour can be reviewed outside the browser.
@@ -491,6 +533,12 @@ async function main() {
         player.bob = 0;
         player.applyCamera(0);
       }
+      /* The shadow map is on a budget in the loop and a capture is not in the
+       * loop, so ask for one explicitly rather than shooting whatever cascade
+       * the last real frame happened to leave behind. */
+      shadows.invalidate();
+      renderer.shadowMap.needsUpdate = true;
+      sun.shadow.needsUpdate = true;
       if (opts.ink !== undefined) pipeline.enabled.ink = opts.ink;
       if (opts.grade !== undefined) pipeline.enabled.grade = opts.grade;
       pipeline.forceScale = opts.scale || 1;

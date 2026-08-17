@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PAL } from '../core/palette.js';
+import { markDynamicMaterial } from '../core/perf.js';
 import { cel, flat } from '../core/toon.js';
 import {
   onsenFascia, onsenBlade, onsenNoren, houraiFuji, ashiyuPlate,
@@ -1088,10 +1089,13 @@ function buildChannel(ctx, m, gm, rng) {
   const puffs = [];
   {
     const geo = new THREE.PlaneGeometry(1, 1);
-    const mat = flat({
+    /* `markDynamicMaterial` because the updater below writes `opacity` on it
+     * every frame: shared with anything else the same colour, the bathhouse
+     * would breathe through it. */
+    const mat = markDynamicMaterial(flat({
       color: PAL.onsenSteam, transparent: true, opacity: 0.17,
       side: THREE.DoubleSide, depthWrite: false, cache: false,
-    });
+    }));
     for (let i = 0; i < 7; i++) {
       const p = new THREE.Mesh(geo, mat);
       const s = rng.range(1.0, 1.9);
@@ -1353,10 +1357,11 @@ function buildRyokan(ctx, m, gm, rng, sakura, shrubs, bamboo, glow, lantern) {
     const vx = cx + 3.0, vz = FRONT_Z + d + 0.1;
     ctx.add(box(0.7, 0.5, 0.3, m.metalDark, vx, Y + 2.6, vz));
     const geo = new THREE.PlaneGeometry(1, 1);
-    const mat = flat({
+    // driven per frame like the steam over the pool -- see the note there
+    const mat = markDynamicMaterial(flat({
       color: PAL.onsenSteam, transparent: true, opacity: 0.15,
       side: THREE.DoubleSide, depthWrite: false, cache: false,
-    });
+    }));
     for (let i = 0; i < 3; i++) {
       const p = new THREE.Mesh(geo, mat);
       const s = 1.1 + i * 0.5;

@@ -4,6 +4,7 @@ import { cel, flat } from '../core/toon.js';
 import { crossingSign, stationSign, warningPlate, tactileTex } from '../core/textures.js';
 import { box, cyl, rngKit, bake, trs, sagCurve } from '../core/util.js';
 import { hullOutline, hullOutlineTree } from '../core/outline.js';
+import { markDynamicMaterial } from '../core/perf.js';
 import { centerX, groundY, ROAD_HALF, WALK_W, WALK_H, GATE_Z, TRACK_HALF, CROSS_BAND } from './street.js';
 import { CIRCUMFERENCE } from './planet.js';
 /* Only for the tunnels' longitudes: the lineside fence, the masking walls and
@@ -600,8 +601,11 @@ function buildCrossing(ctx, parent) {
   const armLamps = lamps.filter((l) => l.userData.lamp === 'arm');
   const lampA = lamps.filter((l) => l.userData.lamp === 'a');
   const lampB = lamps.filter((l) => l.userData.lamp === 'b');
-  // each lens/lamp gets its own material instance so we can drive colour
-  for (const l of lamps) l.material = l.material.clone();
+  /* Each lens/lamp gets its own material instance so we can drive colour --
+   * and says so, because the build's dedupe pass would otherwise hand all
+   * three groups back the one material they were cloned from and blink the
+   * whole crossing in unison.  See `perf.js`. */
+  for (const l of lamps) l.material = markDynamicMaterial(l.material.clone());
 
   const crossingApi = {
     group,
