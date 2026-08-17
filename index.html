@@ -97,6 +97,7 @@
     font: inherit; font-size: 13.5px; color: #3a3350;
     text-align: left; cursor: pointer;
     pointer-events: auto;
+    touch-action: none;
     -webkit-user-select: none; user-select: none;
   }
   .choice-row b {
@@ -583,7 +584,12 @@
    * Nothing here is drawn until it is touched.  A permanent pair of pads in
    * the corners is the fastest way to make a street you are meant to look at
    * read as a phone game instead. */
-  .touch { position: fixed; inset: 0; z-index: 6; display: none; }
+  /* Inert, with the buttons taking their own hits back below.  The pad is a
+   * full-screen fixed layer sitting *over* the HUD, so anything it does not
+   * explicitly let through it eats -- and the thing underneath that has to be
+   * tappable is the choice card's rows, which on a phone are the only way to
+   * pick anything but the first option. */
+  .touch { position: fixed; inset: 0; z-index: 6; display: none; pointer-events: none; }
   .touch.on { display: block; }
 
   .touch-stick {
@@ -627,6 +633,7 @@
     cursor: pointer;
     -webkit-user-select: none; user-select: none;
     touch-action: none;
+    pointer-events: auto;
     transition: transform .1s ease, background .12s ease, border-color .12s ease;
   }
   .touch-btn.primary { width: 78px; height: 78px; font-size: 23px; }
@@ -647,6 +654,11 @@
     .coords { bottom: auto; top: 62px; }
     .control-strip.keys-only { display: none; }
     .control-strip.touch-only { display: flex; }
+    /* a thumb, not a crosshair: the desktop row is ~33 px tall, and the card
+     * puts itself away after six seconds */
+    .choice { min-width: 244px; }
+    .choice-row { padding: 12px 10px; font-size: 15px; }
+    .choice-row b { width: 22px; height: 22px; }
   }
 
   /* ---------- boot / loading screen ----------
