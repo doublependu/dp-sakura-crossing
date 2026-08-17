@@ -1,5 +1,7 @@
 
- 1. Add all pet models
+ 1. Add all land-based and air-based pet models
+    - add a lazy loader of glb files if it makes sense to do that. 
+    - some species can have multiple instances
  2. If not already, depending on the animal, some should be bigger than others, e.g., 2x, 3x the smallest, e.g., a bird
  3. Spawn these NPC animals closer to player's current / initial location
  4. When interating with NPCs, in addition to saying "hello", add "follow", 
