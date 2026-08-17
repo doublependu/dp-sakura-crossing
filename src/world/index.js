@@ -13,6 +13,7 @@ import { makeHouse, makeWall, makeTimberFence, makeBlockFence } from './building
 import { buildSakura, buildShrubs, buildGrove, buildBamboo, buildCedar } from './trees.js';
 import { buildPetals, buildFallenPatches } from './petals.js';
 import { buildPlanet, bakeToPlanet, wrapX, reliefAt, CIRCUMFERENCE } from './planet.js';
+import { buildColliderGrid } from './colgrid.js';
 /* The hills are a *third* ground surface, over both the graded terrain grid and
  * the planet sphere, and they are added to the height queries here rather than
  * folded into `reliefAt` -- `buildPlanet` samples that one, and the sphere has to
@@ -59,8 +60,9 @@ import { buildDetails } from './details.js';
 import {
   makePole, makeWires, makeKeiTruck, makeBicycle, makeMirror, makePostBox,
   makeShrine, makeCat, makeCone, makeBarrier, makeGuardrail, makePlanter,
-  makeUmbrella, makeBins, makeCrates,
+  makeUmbrella, makeBins, makeCrates, makeSignPost,
 } from './props.js';
+import { creditPlate } from '../core/textures.js';
 
 /* ------------------------------------------------------------------ *
  * World assembly.
@@ -721,6 +723,47 @@ export async function buildWorld(scene, onProgress = null) {
     ctx.add(makePlanter({ x, z, y: walkY(z), r, flower, seed: 300 + i, n: 4 }));
   });
 
+  /* ------------------------------ the credit plate ------------------------------
+   * 「Adapted by Man & Bot」, on the east footway a few metres up from the
+   * crossing.
+   *
+   * It goes in here, inside `buildWorld` and *before* the bake, because unlike
+   * the animals and the machine it never moves -- so it is folded onto the
+   * sphere with everything else that stands still, and it costs no per-frame
+   * work at all.  Folded into this phase rather than given a `step()` of its
+   * own, so `TOTAL` does not have to move for one post.
+   *
+   * The position is a compromise between two things that pull apart: a credit
+   * nobody finds is not a credit, and the opening frame is *composed* -- it has
+   * a kerb, a pole, a truck and a crossing in it, all placed to the centimetre.
+   * At z = 11.4 the post is behind the player's left shoulder at the start
+   * (spawn is z = 13.6 facing the crossing), so it is thirty seconds from the
+   * beginning of any walk and in none of the establishing shots.  Checked, not
+   * assumed -- see `.shots/`.
+   */
+  {
+    const y = walkY(11.4);
+    ctx.add(makeSignPost({
+      x: 4.62, z: 11.4, y, ry: -Math.PI / 2, h: 2.15,
+      plates: [{ map: creditPlate(), w: 1.05, h: 0.26, y: 1.42, double: true }],
+    }));
+    ctx.collide(4.4, 11.15, 4.85, 11.65, y + 2.15);
+    const hit = box(0.7, 0.7, 1.2, flat({ color: 0xff0000, cache: false }),
+      4.62, y + 1.42, 11.4);
+    hit.visible = false;
+    ctx.add(hit);
+    ctx.interact({
+      hitbox: hit,
+      label: '町内会の掲示  ·  read the plate',
+      /* The kit is CC0 and credited in the README, which nobody standing in
+       * the street is reading.  The world has no HUD, so it raises a hook and
+       * `main.js` decides what saying something looks like.  `world` is a
+       * `const` declared further down this same function -- initialised long
+       * before anybody can walk up to a sign and press E. */
+      action: () => world.onReadPlate?.(),
+    });
+  }
+
   /* ---------------------------------- cat ----------------------------------
    * The cat needs something to sit on, so it gets its own stretch of garden
    * wall on the left kerb -- which doubles as a foreground edge for the shot. */
@@ -818,9 +861,19 @@ export async function buildWorld(scene, onProgress = null) {
   }
 
   /* ------------------------------- world api ------------------------------- */
+  const bounds = { z0: -CIRCUMFERENCE * 0.24, z1: CIRCUMFERENCE * 0.24 };
+  /* Indexed once, here, because every collider in the world exists by now and
+   * none of them will move again.  See `colgrid.js` for who needed it. */
+  const colliderGrid = buildColliderGrid(colliders, bounds);
+  if (import.meta.env?.DEV) {
+    console.info(`world: ${colliders.length} colliders indexed into `
+      + `${colliderGrid.cells.size} cells (${colliderGrid.spans} spans)`);
+  }
+
   const world = {
     root,
     colliders,
+    colliderGrid,
     /* Exposed so the hills' safety check can see the *paved* half of "built
      * ground": a collider list is only the things standing up, and a pad, a lane
      * or an apron has no collider at all. */
@@ -834,7 +887,7 @@ export async function buildWorld(scene, onProgress = null) {
     planet,
     bakeStats,
     // the world wraps in x, so only latitude is bounded (short of the poles)
-    bounds: { z0: -CIRCUMFERENCE * 0.24, z1: CIRCUMFERENCE * 0.24 },
+    bounds,
     /**
      * Ground height at a flat point.
      *

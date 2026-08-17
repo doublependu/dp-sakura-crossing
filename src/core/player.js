@@ -8,7 +8,10 @@ import { R, basisAt, positionAt, wrapX } from '../world/planet.js';
  * Pointer-lock look, accelerated WASD movement, axis-separated AABB
  * collision against the street's colliders, and a terrain height query so
  * the player steps up onto kerbs and follows the slope beyond the
- * crossing.  Deliberately no jump, no crouch, no third person.
+ * crossing.  No crouch, no third person.
+ *
+ * It also jumps -- see `JUMP` below, and the one thing that block is really
+ * about, which is everything a jump deliberately does *not* change.
  *
  * It also *rides*: `mount()` puts the walker on the e-bike, which swaps four
  * things and leaves everything else alone -- see `RIDE` below.  The vehicle
@@ -18,6 +21,42 @@ import { R, basisAt, positionAt, wrapX } from '../world/planet.js';
 const EYE = 1.62;
 const RADIUS = 0.34;
 const STEP = 0.38;
+
+/**
+ * The jump.
+ *
+ * `pos.y` is normally a pure follower -- it eases onto whatever
+ * `world.heightAt` says the ground is -- and a jump is a *second regime*
+ * rather than a modification of that one: while airborne the ease is off and
+ * a velocity is integrated instead, and on landing it goes straight back to
+ * what it always was.
+ *
+ * **A jump does not change collision, and that is the decision this block
+ * exists to record.**  The tempting version passes the player's actual height
+ * to `_resolve` while airborne, so a hop clears a low wall.  It cannot: a
+ * garden wall has a collider and no `platform`, so clearing one drops the
+ * player *inside* the garden -- or the house, or the world -- and there are
+ * hundreds of them across forty modules, none of which was built with a lid.
+ * So the horizontal simulation is untouched.  You go up; the town stays where
+ * it was.
+ *
+ * The one thing that does open up is safe in the other direction: `heightAt`
+ * is asked from `pos.y`, and a platform is eligible within 0.55 m of it, so a
+ * jump reaches a low deck or a bridge-head step you cannot walk onto.  A
+ * platform is by definition a surface somebody built to stand on, so that is a
+ * feature and it comes free.
+ *
+ * `coyote` and `buffer` are four lines between a jump that feels made and a
+ * jump that feels sampled: one lets you leave a kerb slightly late, the other
+ * lets you press slightly early.
+ */
+export const JUMP = {
+  v: 5.0,           // take-off speed: apex 0.78 m, 0.63 s in the air
+  gravity: 16,
+  coyote: 0.12,     // grace after walking off an edge
+  buffer: 0.15,     // grace for pressing before landing
+  land: 0.06,       // knee dip on touchdown, in metres
+};
 
 /**
  * Riding a machine.
@@ -87,6 +126,15 @@ export class Player {
     this.rideSpeed = this.runSpeed * 1.5;
     this.sensitivity = 0.0022;
 
+    /* Jump state.  `airborne` is what switches `pos.y` from the ground-follower
+     * to the integrator; `coyote` counts down from the last frame on the
+     * ground and `buffered` counts down from the last unserved press. */
+    this.vy = 0;
+    this.airborne = false;
+    this.coyote = 0;
+    this.buffered = 0;
+    this.landDip = 0;
+
     /* Riding state.  `ride` is whatever was handed to `mount()` -- the walker
      * never looks inside it, it only asks whether it is there. */
     this.ride = null;
@@ -138,6 +186,7 @@ export class Player {
       const c = e.code;
       this.keys.add(c);
       if (c === 'KeyE' && this.locked) this.onInteract?.(this.hovered);
+      if (c === 'Space' && this.locked) this.jump();
       if (c === 'KeyR' && this.locked) this.reset();
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'Space'].includes(c) && this.locked) e.preventDefault();
     });
@@ -167,12 +216,28 @@ export class Player {
     this.touch.run = !!run;
   }
 
+  /**
+   * Ask to leave the ground.
+   *
+   * Buffered rather than refused when it cannot be served: pressing a fifth of
+   * a second before landing is what a player *means* by jumping twice, and
+   * dropping the press because the feet were still 40 mm off the pavement is
+   * the single thing that makes a jump feel like it is ignoring you.
+   */
+  jump() {
+    if (!this.active || this.ride) return;
+    this.buffered = JUMP.buffer;
+  }
+
   reset() {
     this.pos.copy(this.spawn.pos);
     this.yaw = this.spawn.yaw;
     this.pitch = this.spawn.pitch;
     this.vel.set(0, 0, 0);
     this.bob = 0;
+    this.vy = 0;
+    this.airborne = false;
+    this.landDip = 0;
   }
 
   /** Get on / off a vehicle.  See the `RIDE` block at the top of the file. */
@@ -180,6 +245,11 @@ export class Player {
     this.ride = vehicle;
     this.vel.set(0, 0, 0);
     this.bob = 0;
+    // a machine does not hop, and a jump left half-served would land the rider
+    // through the seat
+    this.vy = 0;
+    this.airborne = false;
+    this.buffered = 0;
     this._prevYaw = this.yaw;
   }
 
@@ -312,9 +382,41 @@ export class Player {
 
     /* Passing the current feet height is what lets an elevated platform be
      * walked under as well as on: `heightAt` only offers a platform within a
-     * step of where you already are. */
+     * step of where you already are.  Airborne, it is also what lets a jump
+     * reach a low deck the walk could not step onto -- the query is made from
+     * the height the player has actually got to. */
     const targetY = this.world.heightAt(this.pos.x, this.pos.z, this.pos.y);
-    this.pos.y += (targetY - this.pos.y) * (1 - Math.exp(-18 * dt));
+
+    this.coyote = this.airborne ? 0 : Math.max(0, this.coyote - dt);
+    this.buffered = Math.max(0, this.buffered - dt);
+    // on the ground, or close enough to it that the difference is the ease
+    const grounded = !this.airborne && this.pos.y - targetY < 0.12;
+    if (grounded) this.coyote = JUMP.coyote;
+
+    if (this.buffered > 0 && !riding && (grounded || this.coyote > 0)) {
+      this.vy = JUMP.v;
+      this.airborne = true;
+      this.buffered = 0;
+      this.coyote = 0;
+    }
+
+    if (this.airborne) {
+      this.vy -= JUMP.gravity * dt;
+      this.pos.y += this.vy * dt;
+      /* Land only on the way down.  Coming up through the reach of a platform
+       * -- the deck you are jumping onto -- must not count as touching it, or
+       * the take-off frame lands you back on the pavement you left. */
+      if (this.vy <= 0 && this.pos.y <= targetY) {
+        this.pos.y = targetY;
+        this.vy = 0;
+        this.airborne = false;
+        this.landDip = JUMP.land;
+      }
+    } else {
+      this.pos.y += (targetY - this.pos.y) * (1 - Math.exp(-18 * dt));
+    }
+    // the knee, easing back out under the eye height below
+    this.landDip *= Math.exp(-14 * dt);
 
     const moving = Math.hypot(this.vel.x, this.vel.z);
 
@@ -334,8 +436,9 @@ export class Player {
       : 0;
     this.roll += (bank - this.roll) * (1 - Math.exp(-7 * dt));
 
-    this.bob += dt * moving * (sprint ? 8.2 : 6.4);
-    this.applyCamera(moving);
+    // feet off the ground make no footsteps
+    if (!this.airborne) this.bob += dt * moving * (sprint ? 8.2 : 6.4);
+    this.applyCamera(this.airborne ? 0 : moving);
   }
 
   /**
@@ -351,7 +454,8 @@ export class Player {
      * times walking pace it reads as a lurch rather than as footsteps. */
     const riding = this.ride !== null;
     const amp = riding ? 0 : Math.min(moving / this.walkSpeed, 1) * 0.014;
-    const eye = this.pos.y + (riding ? RIDE.eye : EYE) + Math.sin(this.bob) * amp;
+    const eye = this.pos.y + (riding ? RIDE.eye : EYE)
+      + Math.sin(this.bob) * amp - this.landDip;
 
     const b = basisAt(this.pos.x, this.pos.z, this._up, this._east, this._north);
     this._basis.makeBasis(this._east, this._up, this._north);

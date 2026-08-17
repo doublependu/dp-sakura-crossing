@@ -921,13 +921,17 @@ MIT — see [LICENSE](LICENSE). That covers everything in `src/`, which is very
 nearly the whole of the artwork too: the town is entirely procedural geometry
 and procedurally drawn textures, and the two exceptions are both in `public/`.
 
-**The animals.** `public/models/pets/` carries ten models from Kenney's
-[Cube Pets](https://kenney.nl/assets/cube-pets) kit, which is **CC0** — public
-domain, no attribution required, credited here because it is the decent thing
-to do. They are the only imported geometry in the project, and every material
-on them is replaced with `cel()` at load: an untouched glTF renders as a
-photograph pasted onto a painting. The palette atlas beside them is theirs and
-is kept, because on these models the texture *is* the colour.
+**The animals.** `public/models/pets/` carries twenty-three models from
+Kenney's [Cube Pets](https://kenney.nl/assets/cube-pets) kit, which is **CC0** —
+public domain, no attribution required, credited here because it is the decent
+thing to do. That is the whole kit apart from `animal-fish`, which is neither
+land-based nor air-based and would want a swim state and a water surface to use
+it. They are the only imported geometry in the project, and every material on
+them is replaced with `cel()` at load: an untouched glTF renders as a photograph
+pasted onto a painting. The palette atlas beside them is theirs and is kept,
+because on these models the texture *is* the colour. Only the species living
+where you start are fetched before the loading bar comes down; the rest arrive
+on idle over the next few seconds (`world/petmodels.js`).
 
 **The audio.** `public/audio/` carries one track,
 `bfcmusic-divine-sakura-garden-fairytale-music-283353.mp3`, which is stock

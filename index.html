@@ -67,6 +67,70 @@
   }
   .toast.on { opacity: 1; transform: translate(-50%, 0); }
 
+  /* ---------- the choice card (E on an animal) ----------
+   * Under the crosshair rather than centred on it, because the thing being
+   * talked to is what you are looking at and a panel over its face is a panel
+   * you cannot see it through.  `pointer-events: auto` on the rows only: the
+   * card sits inside the HUD, which is inert, and on a phone the rows are the
+   * only way to pick. */
+  .choice {
+    position: absolute; left: 50%; top: calc(50% + 34px);
+    transform: translate(-50%, -6px);
+    min-width: 208px;
+    padding: 9px 9px 8px;
+    border: 1.5px solid rgba(58,51,80,.32); border-radius: 10px;
+    background: rgba(252,250,252,.9);
+    box-shadow: 0 6px 18px rgba(58,51,80,.16);
+    opacity: 0; visibility: hidden;
+    transition: opacity .16s ease, transform .16s ease, visibility .16s;
+  }
+  .choice.on { opacity: 1; visibility: visible; transform: translate(-50%, 0); }
+  .choice-title {
+    padding: 0 6px 7px;
+    font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+    color: #8f88a8;
+  }
+  .choice-row {
+    display: flex; align-items: center; gap: 9px;
+    width: 100%; padding: 7px 8px;
+    border: 0; border-radius: 7px; background: transparent;
+    font: inherit; font-size: 13.5px; color: #3a3350;
+    text-align: left; cursor: pointer;
+    pointer-events: auto;
+    -webkit-user-select: none; user-select: none;
+  }
+  .choice-row b {
+    display: grid; place-items: center;
+    width: 19px; height: 19px; flex: none;
+    border: 1.5px solid rgba(58,51,80,.32); border-radius: 5px;
+    font-size: 11px; font-weight: 800; color: #6b6486;
+  }
+  .choice-row.on { background: rgba(207,92,98,.13); }
+  .choice-row.on b { border-color: #cf5c62; color: #a8434a; }
+
+  /* ---------- a landmark, found ----------
+   * Its own thing, not the toast: this is the one moment in the game that is
+   * a reward, and it should not look like "music off". */
+  .discovery {
+    position: absolute; left: 50%; top: 20%;
+    transform: translate(-50%, 10px) scale(.98);
+    display: grid; justify-items: center; gap: 2px;
+    padding: 13px 26px 14px;
+    border: 2px solid rgba(58,51,80,.85); border-radius: 2px;
+    background: rgba(253,250,244,.94);
+    box-shadow: 5px 5px 0 rgba(58,51,78,.2);
+    text-align: center; white-space: nowrap;
+    opacity: 0; visibility: hidden;
+    transition: opacity .3s ease, transform .3s cubic-bezier(.2,.9,.3,1.2), visibility .3s;
+  }
+  .discovery.on { opacity: 1; visibility: visible; transform: translate(-50%, 0) scale(1); }
+  .discovery .discovery-kicker {
+    font-size: 10px; font-weight: 850; letter-spacing: .18em; text-transform: uppercase;
+    color: #cf5c62;
+  }
+  .discovery strong { font-size: 19px; font-weight: 800; color: #2f2a44; }
+  .discovery em { font-style: normal; font-size: 12.5px; color: #7a7488; }
+
   /* ---------- hint line ---------- */
   .hint {
     position: absolute; left: 18px; bottom: 14px;
@@ -420,6 +484,55 @@
     outline: 3px solid #fffaf0;
     outline-offset: -6px;
   }
+  /* ---------- the collection, in the pause screen ---------- */
+  .collection {
+    display: none;
+    gap: 8px;
+    margin: 16px 0 4px;
+    padding: 12px 14px;
+    border: 1.5px solid rgba(58,51,78,.22);
+    background: rgba(255,253,248,.6);
+  }
+  .collection-head {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+    font-size: 10px; font-weight: 850; letter-spacing: .16em; text-transform: uppercase;
+    color: #746b82;
+  }
+  .collection-head output { color: var(--red); letter-spacing: .06em; }
+  .collection-list {
+    display: flex; flex-wrap: wrap; gap: 4px 10px;
+    max-height: 92px; overflow-y: auto;
+    font-size: 11.5px; line-height: 1.45;
+  }
+  .collection-list .found { color: #3c3550; }
+  .collection-list .found b { font-weight: 700; }
+  .collection-list .found i {
+    font-style: normal; color: #8b8398; margin-left: .35em; font-size: 10.5px;
+  }
+  .collection-list .unfound { color: #c3bdc9; letter-spacing: .06em; }
+  .collection-pets:empty { display: none; }
+  .collection-pets {
+    padding-top: 7px;
+    border-top: 1px dashed rgba(58,51,78,.2);
+    font-size: 11.5px; color: #5f5872;
+  }
+
+  /* ---------- fork me ---------- */
+  .menu-links { display: none; margin-top: 12px; }
+  .overlay[data-mode='paused'] .menu-links { display: block; }
+  .menu-link {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 0;
+    font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+    font-size: 10px; font-weight: 700; letter-spacing: .08em;
+    color: #746b82; text-decoration: none;
+    border-bottom: 1px solid rgba(116,107,130,.4);
+    pointer-events: auto;
+  }
+  .menu-link:hover { color: var(--red); border-bottom-color: var(--red); }
+  .menu-link:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+  .menu-link i { font-style: normal; font-size: 11px; }
+
   .menu-foot {
     display: flex; justify-content: space-between; gap: 16px;
     margin-top: 16px;

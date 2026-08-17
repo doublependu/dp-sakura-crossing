@@ -11,7 +11,9 @@ import { createBoot } from './core/boot.js';
 import { createTouchControls } from './core/touch.js';
 import { buildWorld } from './world/index.js';
 import { createEbike } from './world/ebike.js';
-import { loadPetModels, createPets } from './world/pets.js';
+import { buildNavGraph, LANDMARKS } from './world/landmarks.js';
+import { createPetLibrary, SPECIES_KEYS } from './world/petmodels.js';
+import { createPets, EAGER } from './world/pets.js';
 
 /* ------------------------------------------------------------------ *
  * Sakura Crossing -- entry point.
@@ -117,7 +119,12 @@ const ASSETS_END = 0.18;
 const BUILD_END = 0.93;
 
 async function main() {
-  const petModels = await loadPetModels((f) => boot.progress(f * ASSETS_END, '動物たち'));
+  /* Only the animals living where the player is standing are waited for.  The
+   * other seventeen species are 2.4 MB that nobody is within forty metres of,
+   * and they arrive on idle over the following few seconds -- see the note on
+   * `idleQueue` in `petmodels.js`. */
+  const library = createPetLibrary();
+  await library.preload(EAGER, (f) => boot.progress(f * ASSETS_END, '動物たち'));
 
   const world = await buildWorld(scene, (f, label) => {
     boot.progress(ASSETS_END + f * (BUILD_END - ASSETS_END), label);
@@ -134,7 +141,25 @@ async function main() {
     }
   } catch { /* storage is optional; the game works without it */ }
 
-  const hud = createHud({ volume: initialVolume });
+  /* The collection, restored as a *record* rather than as a party: the
+   * landmarks stay found, and the animals are back where they live.  Which is
+   * the point -- it keeps the walk worth taking twice. */
+  const COLLECTION_KEY = 'sakura-crossing-collection';
+  const discovered = new Set();
+  try {
+    const saved = JSON.parse(localStorage.getItem(COLLECTION_KEY) || '{}');
+    if (Array.isArray(saved.landmarks)) {
+      const known = new Set(LANDMARKS.map((l) => l.id));
+      for (const id of saved.landmarks) if (known.has(id)) discovered.add(id);
+    }
+  } catch { /* storage is optional; the game works without it */ }
+  const rememberCollection = () => {
+    try {
+      localStorage.setItem(COLLECTION_KEY, JSON.stringify({ landmarks: [...discovered] }));
+    } catch { /* optional */ }
+  };
+
+  const hud = createHud({ volume: initialVolume, landmarks: LANDMARKS });
   const music = createMusic({ volume: initialVolume, fadeIn: 3.0 });
   hud.setMuted(music.muted);
   const rememberVolume = () => {
@@ -150,14 +175,53 @@ async function main() {
    * because it is placed *after* the planet bake -- see the note in the file. */
   const ebike = createEbike({ scene, world, player, hud });
 
+  /* Where an animal can take you, and how it gets there.  Built here because
+   * it reads the finished world -- every collider and every surface -- and
+   * nothing before the bake could answer it.  A third of a second, under the
+   * bar rather than after it. */
+  boot.progress(BUILD_END, 'しるべ');
+  const nav = buildNavGraph(world);
+
   /* The animals, for the same reason and by the same rules: they move, so they
    * cannot be baked, so they are seated on the sphere by hand every frame. */
-  const pets = createPets({ scene, world, player, models: petModels });
+  const pets = createPets({
+    scene, world, player, nav, library, discovered,
+    onDiscover: (lm, first) => {
+      hud.announce(lm, first);
+      if (first) rememberCollection();
+      refreshCollection();
+    },
+    onCompanion: () => refreshCollection(),
+  });
+  const refreshCollection = () => hud.setCollection(discovered, pets.companions);
+  refreshCollection();
+
+  // the plate on the east footway asks the HUD to say who made the place
+  world.onReadPlate = () => hud.flash('Adapted by Man & Bot  ·  animals: Kenney Cube Pets (CC0)', 3600);
+
+  /* Everything eagerly loaded is placed now, before anybody has moved.  The
+   * rest arrive over the next few seconds and place themselves, subject to
+   * the "not in front of you" rule in `pets.materialise`. */
+  for (const key of EAGER) {
+    const model = library.peek(key);
+    if (model) pets.materialise(key, model);
+  }
+  library.idleQueue(SPECIES_KEYS.filter((k) => !EAGER.includes(k)),
+    (key, model) => pets.materialise(key, model));
 
   player.onInteract = (target) => {
     // on the machine, E is the way off it, whatever you happen to be looking at
     if (ebike.riding) { ebike.dismount(); return; }
-    if (target) target.action?.();
+    if (!target) return;
+    /* Anything offering more than one thing to say opens the card; anything
+     * that does not behaves exactly as it always has, which is what leaves
+     * the cat on the garden wall untouched. */
+    const options = target.options;
+    if (options?.length > 1) {
+      hud.openChoice(target.label.replace(/\s*·.*$/, ''), options);
+    } else {
+      target.action?.();
+    }
   };
 
   /* ------------------------------- pipeline ------------------------------- */
@@ -248,9 +312,29 @@ async function main() {
       hud.flash(planetView ? 'orbit view  ·  P to return' : 'back on the ground');
     },
     interact() {
+      // with the card up, the button confirms rather than re-opening it
+      if (hud.choiceOpen) { hud.choiceKey('KeyE'); return; }
       player.onInteract?.(player.hovered);
     },
+    jump() {
+      player.jump();
+    },
   };
+
+  /* The card gets first refusal, in the *capture* phase.
+   *
+   * Which is the only way round the ordering: `player.js` binds its own
+   * keydown in the constructor, long before this file binds anything, so a
+   * bubble-phase listener here sees `E` after the walker has already handled
+   * it and re-opened the card that was about to be confirmed.  A capture
+   * listener on `window` is the first thing in the document to see the key. */
+  window.addEventListener('keydown', (e) => {
+    if (e.repeat) return;
+    if (hud.choiceKey(e.code)) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, { capture: true });
 
   window.addEventListener('keydown', (e) => {
     if (e.repeat) return;
@@ -373,7 +457,7 @@ async function main() {
   frame();
 
   // expose a little for tuning from the console
-  window.__scene = { scene, camera, renderer, pipeline, world, player, ebike, pets, music, hud, sun, fill, bounce, hemi, THREE };
+  window.__scene = { scene, camera, renderer, pipeline, world, player, ebike, pets, nav, library, discovered, music, hud, sun, fill, bounce, hemi, THREE };
   window.__setOutlineRes = setOutlineResolution;
 
   if (import.meta.env?.DEV) {

@@ -78,9 +78,17 @@ export function createTouchControls({ onMove, onLook, onAction } = {}) {
     return b;
   };
 
-  // V first so E, the one that is pressed constantly, ends up outermost --
-  // under the thumb rather than a reach past another button
-  button(buttons, '', 'V', 'ebike');
+  /* V first so E, the one that is pressed constantly, ends up outermost --
+   * under the thumb rather than a reach past another button.  J sits between
+   * them: pressed far more than the machine and far less than E.
+   *
+   * V drops to the small size to make room for it.  Three full-size buttons
+   * and their gaps are 300 px, which on a 390 px phone reaches back past the
+   * middle of the screen and puts a dead patch under the *left* thumb, where
+   * the stick is supposed to appear.  The machine is summoned once in a
+   * while; the jump is pressed over every kerb. */
+  button(buttons, 'small', 'V', 'ebike');
+  button(buttons, '', 'J', 'jump');
   const eBtn = button(buttons, 'primary', 'E', 'interact');
   button(corner, 'small', '☰', 'pause');
   button(corner, 'small', 'P', 'planet');

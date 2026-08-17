@@ -481,3 +481,112 @@ guide that gets stuck.
 **Not in scope and deliberately still missing**: the Low/High quality toggle
 from `PLAN_1.md`, which is still waiting on a measurement from a real handset.
 Thirty-four animals make that measurement more urgent, not less.
+
+---
+
+## 7. What actually shipped, and where it differs
+
+All seven items went in. Eight things changed on contact with the world, and
+each of them is a decision rather than a detail.
+
+1. **The sizes are not the sizes in the plan, because the brief changed.**
+   "Make them cute and visible" turns §2.2 from a zoological ladder into a
+   game one: the range is now **0.34 m to 1.15 m**, a spread of about three
+   and a half rather than nineteen. A bee is a bumblebee the size of a teacup
+   and an elephant comes up to your waist. That also deleted a whole section
+   of the plan — with nothing wider than a metre, no species has to be exiled
+   from the town for not fitting down a two-metre alley, so **§2.3's "big four
+   never go in the town" rule is gone** and every animal lives wherever it
+   suits. The tone flag at the bottom of §6 is answered the same way: a
+   knee-high giraffe in a suburban lane is a toy in a street, which this world
+   can carry, where a 4.8 m one would have been a crane with a face.
+
+2. **The hand-placed junction table did not work and was deleted.** Sixty
+   coordinates off the documented camera positions gave **thirty-eight
+   disconnected islands**: a junction every thirty metres leaves every edge
+   leaping a whole district in one straight line, and a straight line across a
+   district hits a house. It is a lattice now — a node every 5 m over four
+   rectangles of interesting ground, keep the ones with room to stand, join
+   the neighbours — which is a coarse navmesh, costs one 250 ms sweep at
+   startup, and needs no maintenance at all. **2 060 nodes, 6 607 edges, 30 of
+   the 39 landmarks in one component**, and a second self-contained cluster of
+   six around the lake. `onsen`, `pier` and `lakecafe` are in pockets of their
+   own; an animal there simply has nowhere to offer.
+
+3. **`wrapDelta(a, b)` is `a - b`, and getting it backwards cost an
+   afternoon.** The corridor test walked *away* from its target, so every edge
+   in the graph was checked against a mirror image of the ground it was
+   supposed to cross. It looked exactly like a world too cluttered to
+   navigate — the distances were right the whole time, because a hypotenuse
+   does not care about signs. There is now a `nav.explain(a, b)` hook that says
+   why any edge does or does not exist, which is what found it.
+
+4. **The corridor test asks a different question than the plan said.** "Is
+   there a clear 1.2 m tube the whole way" rejects a straight line *down the
+   middle of the street*, because a kei truck is parked on it: 55 edges out of
+   1 514 candidates. What a pet actually needs is a corridor that is broadly
+   open, because the last two metres are what its obstacle probe is for. A
+   fraction of the line may be blocked, no more than 2 m of it consecutively,
+   and the sample is every 0.5 m rather than every 1 m — at a metre a *slope*
+   and a *step* read identically, so no single rise limit could both admit the
+   hillside and reject a retaining wall.
+
+5. **The choice card does not own W and S.** The plan had them moving the
+   highlight. They cannot: the card is deliberately non-modal so an animal
+   cannot wander off while you decide, which means W has to keep meaning "walk
+   forward" the entire time it is up. Two options need `1`, `2` and `E`, and
+   that is all it takes. It also has to intercept in the **capture** phase --
+   `player.js` binds its keydown in its constructor, long before `main.js`
+   binds anything, so a bubble listener sees `E` only after the walker has
+   already re-opened the card that was about to be confirmed.
+
+6. **The collection lists what you have found, not what you have not.**
+   Thirty-nine rows of `———` is a checklist with three ticks on it, and it
+   turns a quiet walk into a completion task. Found places are listed; the
+   remainder gets one muted line saying how many are still out there.
+
+7. **A collider spatial grid turned out to be a prerequisite, not an
+   optimisation.** `world.colliders` holds **2 732** boxes; the graph fires
+   about eighty thousand probes at startup and thirty-odd animals fire three
+   each per frame. It is a 4 m grid now (3 783 cells, 8 321 spans), and it
+   carries the pets, the graph and anything else that asks. It was checked
+   against a brute-force scan over 4 897 points before anything was allowed to
+   depend on it: **zero disagreements**.
+
+8. **The draw cap is 18, not 22, and the four are a measurement.** At 22 the
+   animals cost **150 draw calls** at the crossing against a budget of 130. At
+   18 they cost **111** (10 725 with them, 10 614 with the group hidden), 111
+   at the shotengai and 100 at the library. The four that go are the four
+   furthest away, at fifty-odd metres and four pixels across.
+
+**Verified** in headless Chrome over CDP, stepping `world.update` and
+`pets.update` by hand because rAF never fires in that pane:
+
+- **43 animals from 23 species**, all placing correctly; the wander tracked
+  over 30 simulated seconds; siblings from one anchor 1.6–17 m apart after the
+  ring search was taught to start away from the anchor (three chicks were
+  standing inside each other, because every angle at radius nought is the same
+  point).
+- **The guide, end to end**: a cat in the back alley offered 桜踏切 → 文具 ひばり堂,
+  planned a six-hop route, walked it while the player trailed four metres
+  behind, arrived, was adopted at **56 s**, wrote the landmark to the
+  collection and became a companion. Zero stuck re-plans on that run.
+- **The jump**: apex **0.74 m**, **0.60 s** airborne, a garden wall is *not*
+  clearable (0 m climbed), no double jump from a buffered press, and inert on
+  the e-bike.
+- **The interaction path**: crosshair picks `ねこ · say hello`, two options,
+  card opens titled ねこ with `say hello` / `follow`, `W` passes through it
+  untouched, `2` is taken and closes it.
+- **The counts**: colliders 2 731 → **2 732** (the sign, exactly as predicted);
+  interactables grow by one per animal as it materialises, which is the new
+  baseline.
+- **The lazy loader**: eager set is six species (~1 MB) and the loading bar
+  finishes on those alone; the other seventeen arrive on idle; a late arrival
+  refuses to appear within 32 m of the player and retries twice a second until
+  it can.
+
+**Still open, honestly**: the phone has been checked in an emulator, not on a
+handset, so the Low/High toggle is still the next measurement this needs — and
+it matters more now. `onsen`, `pier` and `lakecafe` are reachable on foot but
+not by a guide, which is a lattice that does not quite reach them rather than a
+bug, and the fix is another rectangle rather than another idea.

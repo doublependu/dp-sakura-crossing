@@ -4395,3 +4395,31 @@ export const maintGatePlate = () =>
       centered(c, 'ひばり電鉄  施設課', w / 2, 258, w - 60, 22, '#8a8696', '600');
     })
   );
+
+/* ------------------------------------------------------------------ *
+ * The credit plate.
+ *
+ * Appended at the very end, like every other table in this file, because
+ * `variant:` indices are baked into geometry all over the world and nothing
+ * here can be inserted into.
+ *
+ * Drawn as what it would actually be if it were in this town: a small enamel
+ * 町内会 plate on a post, the same 512 x 128 blade as the lake's name signs,
+ * bilingual because every other sign in the district is.  It says who made
+ * the place, which is the one thing in the world that is not a fiction.
+ * ------------------------------------------------------------------ */
+export const creditPlate = () =>
+  cached('creditPlate', () =>
+    make(512, 128, (c, w, h) => {
+      c.fillStyle = '#f6f1e4';
+      c.fillRect(0, 0, w, h);
+      rule(c, 0, 0, w, 7, PAL.redDeep);
+      rule(c, 0, h - 7, w, 7, PAL.redDeep);
+      centered(c, 'Adapted by Man & Bot', w / 2, h * 0.40, w - 54, 42, '#3b3346', 'bold', 1);
+      c.font = `600 20px ${JP_FONT}`;
+      c.fillStyle = '#8a8296';
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
+      c.fillText('人と機械の手による  ·  桜踏切', w / 2, h * 0.74);
+    })
+  );
