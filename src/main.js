@@ -14,6 +14,9 @@ import { createEbike } from './world/ebike.js';
 import { buildNavGraph, LANDMARKS } from './world/landmarks.js';
 import { createPetLibrary, SPECIES_KEYS } from './world/petmodels.js';
 import { createPets, EAGER } from './world/pets.js';
+import { loadDragon } from './world/dragonmodel.js';
+import { createDragon } from './world/dragon.js';
+import { createCinderfall } from './world/cinderfall.js';
 import { createShadowBudget, createFreezeAudit } from './core/perf.js';
 
 /* ------------------------------------------------------------------ *
@@ -197,8 +200,26 @@ async function main() {
   const refreshCollection = () => hud.setCollection(discovered, pets.companions);
   refreshCollection();
 
+  /* 灰の雨 and the thing that breathes it.
+   *
+   * Two objects and one dependency: `cinderfall` owns the effect and the rule
+   * about where a cinder may land; the dragon decides *when*, on its own clock,
+   * with no input from anybody.  There is nothing to press.
+   *
+   * The model waits.  It is 1.5 MB for an animal a hundred metres north behind
+   * a three-storey block, and putting that in front of the loading bar is four
+   * seconds of nothing on a phone -- the same argument `petmodels.js` makes
+   * about the far species, and the same answer: after the bar, on idle.  The
+   * school is simply empty until it lands. */
+  const cinder = createCinderfall({ scene, world, player, camera });
+  let dragon = null;
+  loadDragon().then((model) => {
+    if (!model) return;
+    dragon = createDragon({ scene, world, player, cinder, model });
+  });
+
   // the plate on the east footway asks the HUD to say who made the place
-  world.onReadPlate = () => hud.flash('Adapted by Man & Bot  ·  animals: Kenney Cube Pets (CC0)', 3600);
+  world.onReadPlate = () => hud.flash('Adapted by Man & Bot  ·  animals: Kenney Cube Pets (CC0)  ·  dragon by Double Pendu', 4200);
 
   /* Everything eagerly loaded is placed now, before anybody has moved.  The
    * rest arrive over the next few seconds and place themselves, subject to
@@ -413,6 +434,11 @@ async function main() {
     player.update(dt);
     ebike.update(dt);
     pets.update(dt);
+    dragon?.update(dt);
+    /* The camera goes in because every flame in there is a billboard and the
+     * ember cloud is two hundred of them: the effect cannot place a single
+     * quad without knowing where it is being looked at from. */
+    cinder.update(dt, camera);
     world.update(dt);
 
     if (planetView) {
@@ -483,7 +509,7 @@ async function main() {
   frame();
 
   // expose a little for tuning from the console
-  window.__scene = { scene, camera, renderer, pipeline, world, player, ebike, pets, nav, library, discovered, music, hud, sun, fill, bounce, hemi, THREE };
+  window.__scene = { scene, camera, renderer, pipeline, world, player, ebike, pets, cinder, get dragon() { return dragon; }, nav, library, discovered, music, hud, sun, fill, bounce, hemi, THREE };
   window.__setOutlineRes = setOutlineResolution;
 
   if (import.meta.env?.DEV) {

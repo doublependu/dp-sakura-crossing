@@ -1040,7 +1040,7 @@ front of `JP_FONT`.
 
 MIT — see [LICENSE](LICENSE). That covers everything in `src/`, which is very
 nearly the whole of the artwork too: the town is entirely procedural geometry
-and procedurally drawn textures, and the two exceptions are both in `public/`.
+and procedurally drawn textures, and the exceptions are all in `public/`.
 
 **The animals.** `public/models/pets/` carries twenty-three models from
 Kenney's [Cube Pets](https://kenney.nl/assets/cube-pets) kit, which is **CC0** —
@@ -1053,6 +1053,18 @@ pasted onto a painting. The palette atlas beside them is theirs and is kept,
 because on these models the texture *is* the colour. Only the species living
 where you start are fetched before the loading bar comes down; the rest arrive
 on idle over the next few seconds (`world/petmodels.js`).
+
+**The dragon.** `public/models/dragon/dragon.glb` is original work by the author
+of this repository and is covered by the MIT licence above like the rest of it.
+It is a skinned mesh on a 46-bone rig with eight clips, and it is handled the
+same way the pets are — every material replaced with `cel()` at load — with two
+additions worth knowing about. Its fifteen primitives are **merged into one
+draw call**, with each primitive's `baseColorFactor` baked into a per-vertex
+colour, because fifteen materials on one animal is thirty draw calls in a scene
+that is bound at about 2 800. And the two primitives that are the model's own
+flame are **dropped**: the fire it breathes is `world/cinderfall.js` instead.
+The bone that drove that flame stays, and is what the effect is triggered from —
+see `world/dragonmodel.js`.
 
 **The audio.** `public/audio/` carries one track,
 `bfcmusic-divine-sakura-garden-fairytale-music-283353.mp3`, which is stock

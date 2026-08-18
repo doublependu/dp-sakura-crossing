@@ -165,6 +165,26 @@ thing, stopping just short of it: what comes back is *which mesh* is in the way
 and for how many frames. That is what found the vending can's 0.9 s visible
 window and turned it into 1.9.
 
+**A whole world will build in Node**, not just one builder, and that turned out
+to be the only way to check the dragon at all — the capture endpoint needs a
+browser and there was not one in the session it was written in.  The stub is the
+same no-op Canvas2D proxy as above plus `window`, `requestAnimationFrame`,
+`requestIdleCallback` and `localStorage`; `await buildWorld(new Scene(), () => {})`
+then takes about five seconds and gives a real `heightAt`, a real collider grid
+and a real interactables list.  Two things are worth knowing before trying it:
+
+  - **`GLTFLoader.loadAsync` cannot read a `file://` URL** — `FileLoader` goes
+    through `fetch`, which has no file scheme.  Read the `.glb` with `fs` and use
+    `loader.parse(arrayBuffer, '', resolve, reject)` instead.
+  - **Nothing calls `scene.updateMatrixWorld()`**, because nothing renders.  So
+    `object.matrixWorld` is the identity and reading a world position off one
+    reports the planet centre.  Read `object.position` instead, or flush the
+    matrices by hand.
+
+That harness is what found the dragon freezing in mid-air at 110 m (the LOD note
+in `world/dragon.js`), the 0.02-second walk state, and the nineteen-of-thirty
+minutes it spent asleep.  None of the three is visible in a screenshot.
+
 **`__shot` does not know about the e-bike**, and it has to be stepped by hand for
 the same reason nothing else animates: `__shot` moves the player and re-derives
 `pos.y`, but only `ebike.update()` moves the machine onto it. Set the pose
@@ -184,7 +204,10 @@ Riding also has no keyboard in a headless page, so a ride is simulated by settin
 to measure the top speed or watch the bank build.
 
 `window.__scene` exposes `{ scene, camera, renderer, pipeline, world, player,
-ebike, music, hud, sun, fill, bounce, hemi, THREE }`. If it is `undefined`, the dev server
+ebike, pets, cinder, dragon, nav, library, discovered, music, hud, sun, fill,
+bounce, hemi, THREE }`.  `dragon` is a **getter** and is `null` until the model
+arrives on idle a few seconds after the bar comes down — `s.dragon?.debug` is
+the safe way to ask. If it is `undefined`, the dev server
 has probably died — restart it with `preview_start` (config in
 `.claude/launch.json`). It has died mid-session more than once.
 
@@ -238,6 +261,18 @@ await __shot('ichomeW', 1400, 790, { pos: [-58.0, 0, -6.9], yaw: -1.5708, pitch:
 await __shot('nispine', 1400, 790, { pos: [49.2, 0, 12.0], yaw: 3.1416, pitch: 0.04 })   // 二丁目通り: the clinic, the pharmacy, the 不動産
 await __shot('nishido', 1400, 790, { pos: [52.6, 0, 31.0], yaw: -1.5708, pitch: 0.02 })  // the 私道: 連棟 against 狭小住宅
 await __shot('nicar',   1400, 790, { pos: [50.6, 0, 8.6], yaw: -1.5708, pitch: 0.02 })   // the 月極 park under the railway wall
+// 竜 — the dragon.  It moves, so set the state first and step it, the way the
+// e-bike has to be posed; `force` pins a state and `teleport` puts it somewhere.
+await __shot('dragon',  1400, 790, { pos: [46, 0, -50], yaw: -0.7, pitch: 0.05 })       // the roost (58, -56.5), across 校庭
+await __shot('dragonC', 1200, 760, { pos: [50, 0, -56], yaw: -1.5708, pitch: 0.12 })    // close, at the school ground
+await __shot('dragonP', 1400, 790, { pos: [34.5, 0, -128.2], yaw: 3.0, pitch: 0.02 })   // perched on the crest, from the 展望台
+// the fire is nobody's decision but its own, so it has to be asked for by hand:
+// `breathe(dPlayer)` picks a legal target and starts the cast, and the cinder
+// leaves the jaw about 0.7 s later when the `firejet` bone opens.
+s.dragon.breathe(15); for (let i = 0; i < 130; i++) { s.dragon.update(1/60); s.cinder.update(1/60, s.camera); }
+await __shot('cinder',  1400, 790, {})   // mid-arc, the cinder inside its own fireball
+for (let i = 0; i < 25; i++) { s.dragon.update(1/60); s.cinder.update(1/60, s.camera); }
+await __shot('burst',   1400, 790, {})   // the detonation, three shells at full reach
 await __shot('yonmouth',1400, 790, { pos: [-3.4, 0, 53.0], yaw: 3.1416, pitch: 0.05 })   // the main road's head and its barrier
 await __shot('yonarm',  1400, 790, { pos: [7.0, 0, 56.9], yaw: 1.5708, pitch: 0.02 })    // west down 四丁目's arm to the T
 await __shot('tsulane', 1400, 790, { pos: [-21.8, 0, -58.0], yaw: 3.1416, pitch: 0.03 }) // 五丁目's lane, shop backs to the east
@@ -883,6 +918,14 @@ the shutter, the cat and the relay box. Counted from `world.interactables`; this
 line said "twelve" for several rounds after it stopped being true.  The e-bike
 makes a twenty-third while it is standing out, and takes it away again when it
 is put away or ridden — so a count taken at the wrong moment is 23, not a leak.
+
+Those 22 are the count **inside `buildWorld`**, and three runtime modules push
+onto the same list afterwards, so the number the console reports is higher.
+Measured, headless, on a settled world: `buildWorld` leaves **25**, the pets add
+one per animal as their models arrive, and **the dragon adds exactly one** —
+`world/dragon.js`, at the school ground.  So `25 -> 26` immediately after the
+dragon lands, plus the animals, plus the e-bike when it is out.  A count taken
+before `loadDragon()` resolves is one short and is not a leak either.
 
 **電動バイク — the one thing in this world with wheels that moves.**
 `world/ebike.js`, and it is a runtime module rather than a district for exactly

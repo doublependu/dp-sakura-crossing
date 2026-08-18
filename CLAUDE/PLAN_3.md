@@ -21,6 +21,27 @@ Three items in the brief, and only the first is really new:
 The order of work is at the end. Item 3 is the biggest of the three and the one
 that can be built and looked at on its own, so it is not last.
 
+> ### AMENDED AFTER IMPLEMENTATION
+>
+> This document is the plan as approved, kept as written.  Three things in it
+> were changed afterwards, on instruction, and §4, §6 and §10 should be read
+> knowing that:
+>
+> 1. **The `E` trigger, the 1.6 s wind-up and the crosshair aim are gone.**  The
+>    dragon breathes when it decides to, much more often with a player nearby,
+>    and picks its own target.  The whole of §4's interaction design and §6's
+>    camera-ray march went with them; what survived is the rule about where a
+>    cinder may land (`canLand` in `cinderfall.js`).  The one thing on `E` now
+>    is "say hello".
+> 2. **It is 5.5 m, not 2.4.**  The plan's 2.4 m came out as thirty pixels at the
+>    eighty-six metres from the school ground to the crest, which is a smudge in
+>    a treeline.  §1's wingspan arithmetic was also wrong -- the model is 2.83
+>    units tall, not 2.03, because the horns clear the body by a third.
+> 3. **The fireball was missing.**  §5 kept "the burst" in its table and the
+>    first implementation did not build it: no shells, only embers and a ring.
+>    The reference's `onImpact` spawns two nested `BurstMode.FIRE` bodies and
+>    that pair *is* the explosion.  There are three of them now.
+
 **Answered since the first draft** (§10 is what is left):
 
 - **`dragon.glb` is yours.** No licence to chase, nothing to vendor from a third

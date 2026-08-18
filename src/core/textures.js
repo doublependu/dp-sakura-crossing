@@ -457,6 +457,111 @@ export const petalTex = () =>
     }, { srgb: false })
   );
 
+/* --------------------------------- fire --------------------------------- *
+ * Three masks for `world/cinderfall.js`, and all three are alpha only
+ * (`srgb: false`) because the colour comes from the instance, not the map --
+ * one ember cloud is drawn in four colours over a particle's life out of a
+ * single 64-pixel texture.
+ *
+ * They are drawn the way a background artist would draw fire rather than the
+ * way a simulation would: **hard silhouettes with a flat interior**.  Nothing
+ * here has a gradient in it.  A soft radial blob is what every particle system
+ * defaults to and it is exactly what makes fire read as a photograph -- the
+ * eye finds no edge to follow, so it stops looking like drawing and starts
+ * looking like light.  These have edges.
+ * ------------------------------------------------------------------ */
+
+/**
+ * One flame tongue, pointing up, drawn as a silhouette with two licks
+ * splitting off it.
+ *
+ * Asymmetric on purpose: the trail lays forty of these along an arc at random
+ * rolls, and a symmetric tongue repeated forty times reads as a row of the
+ * same sticker.  The asymmetry is what makes a chain of them read as one
+ * moving mass.
+ */
+export const flameTex = () =>
+  cached('flameTex', () =>
+    make(128, 128, (c, w, h) => {
+      c.clearRect(0, 0, w, h);
+      c.translate(w / 2, h);          // origin at the foot of the tongue
+      c.fillStyle = '#ffffff';
+      c.beginPath();
+      c.moveTo(-30, -2);              // the base, sitting on the origin
+      c.bezierCurveTo(-34, -30, -26, -50, -30, -74);   // the left lick, out and up
+      c.bezierCurveTo(-18, -60, -14, -52, -10, -66);
+      c.bezierCurveTo(-6, -84, -2, -104, 2, -122);     // the main tip
+      c.bezierCurveTo(6, -98, 12, -80, 18, -70);
+      c.bezierCurveTo(22, -58, 26, -56, 30, -66);      // the right lick, shorter
+      c.bezierCurveTo(34, -44, 32, -22, 30, -2);
+      c.closePath();
+      c.fill();
+    }, { srgb: false })
+  );
+
+/**
+ * An ember: a rounded four-point star, not a disc.
+ *
+ * A disc at four pixels across is a dot, and two hundred dots is static.  The
+ * points give the cloud a direction to twinkle along as the quads roll, which
+ * at this size is the only structure that survives.
+ */
+export const emberTex = () =>
+  cached('emberTex', () =>
+    make(64, 64, (c, w, h) => {
+      c.clearRect(0, 0, w, h);
+      c.translate(w / 2, h / 2);
+      c.fillStyle = '#ffffff';
+      c.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const a = (i * Math.PI) / 2;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const nx = -sa, ny = ca;
+        // out to the point, then back to the waist with the control point on
+        // the diagonal -- a star whose arms are concave and whose middle is fat
+        if (i === 0) c.moveTo(ca * 30, sa * 30);
+        else c.lineTo(ca * 30, sa * 30);
+        c.quadraticCurveTo((ca + nx) * 7, (sa + ny) * 7, nx * 30, ny * 30);
+      }
+      c.closePath();
+      c.fill();
+    }, { srgb: false })
+  );
+
+/**
+ * The burnt patch left on the ground: an irregular disc with a soft rim.
+ *
+ * The one place a gradient is right, because a scorch mark *is* a fade -- the
+ * ground is stained hardest at the middle and the edge is where the heat ran
+ * out.  Lobed rather than round: a circle on the ground reads as a decal, and
+ * this has to read as damage.
+ */
+export const scorchTex = () =>
+  cached('scorchTex', () =>
+    make(256, 256, (c, w, h) => {
+      c.clearRect(0, 0, w, h);
+      c.translate(w / 2, h / 2);
+      const g = c.createRadialGradient(0, 0, 10, 0, 0, 118);
+      g.addColorStop(0, 'rgba(255,255,255,1)');
+      g.addColorStop(0.55, 'rgba(255,255,255,0.92)');
+      g.addColorStop(0.82, 'rgba(255,255,255,0.42)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      c.fillStyle = g;
+      // seven lobes of slightly different reach, so the outline is not a circle
+      const lobes = [1.0, 0.86, 0.97, 0.78, 1.0, 0.83, 0.92];
+      c.beginPath();
+      for (let i = 0; i <= 48; i++) {
+        const t = (i / 48) * Math.PI * 2;
+        const k = lobes[i % lobes.length];
+        const r = 118 * (0.82 + 0.18 * k) * (1 + 0.06 * Math.sin(t * 7));
+        const x = Math.cos(t) * r, y = Math.sin(t) * r;
+        if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+      }
+      c.closePath();
+      c.fill();
+    }, { srgb: false })
+  );
+
 /** Soft round blob used for the flat anime clouds. */
 export const cloudTex = () =>
   cached('cloudTex', () =>
