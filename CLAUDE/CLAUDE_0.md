@@ -203,25 +203,43 @@ the page and hands the answer back; `Page.captureScreenshot` gives a PNG.
 Measured on this machine: SwiftShader draws this scene at **22 ms a frame**, and
 `window.__scene` is up about 17 s after navigation.
 
-For **video**, do not capture wall-clock frames -- pin the world instead:
+For **video**, pin the world clock and take one screenshot per frame:
 
 ```js
-s.THREE.Clock.prototype.getDelta = () => 0;      // the page's own loop advances nothing
-const track = canvas.captureStream(0).getVideoTracks()[0];   // 0 = frames pushed by hand
-const mr = new MediaRecorder(new MediaStream([track]), { mimeType: 'video/webm;codecs=vp9' });
-mr.start();
-for (let f = 0; f < frames; f++) {
-  step(1/30);                       // player, ebike, pets, dragon, cinder, world
-  s.pipeline.render();
-  track.requestFrame();             // exactly one encoded frame per rendered one
-  if ((f & 7) === 0) await new Promise((r) => setTimeout(r, 0));   // let the encoder breathe
-}
+s.THREE.Clock.prototype.getDelta = () => 0;   // the page's own loop advances nothing
+// then per frame, from Node:
+//   await cdp.eval('__step(' + f + ')')      // player, ebike, pets, dragon, cinder, world,
+//                                            // then s.pipeline.render()
+//   await cdp.send('Page.captureScreenshot', { format: 'png' })  -> frames/0000.png
 ```
 
-However long a frame takes to draw, the file plays at exactly 30 fps with no
-judder and no dropped time.  VP9 encoding is the slow part -- about 1.5 s a
-frame, so ten seconds of video is roughly seven minutes of wall clock.  The flat
-cel colours compress absurdly well: 285 frames of 1280x720 came out at 0.79 MB.
+then `ffmpeg -framerate 30 -i frames/%04d.png -c:v libx264 -preset veryslow -crf 17
+-pix_fmt yuv420p -movflags +faststart -an out.mp4`.  Force the viewport with
+`Emulation.setDeviceMetricsOverride({ width: 1280, height: 720, ... })` -- the
+`--window-size` flag leaves the canvas at 1280x633 once the browser has taken
+its own furniture out of the frame, and an odd height cannot be encoded as
+yuv420p without cropping a row off.
+
+It is **slow**: `Page.captureScreenshot` forces a full composite, so under
+SwiftShader it costs about eight seconds a frame and a ten-second film is
+thirty-five minutes of wall clock.  Take the slowness.
+
+**Do not use `MediaRecorder`.**  It is the obvious route -- `canvas.captureStream(0)`
+plus `track.requestFrame()` looks like it hands the encoder exactly the frames
+you choose -- and it **silently drops most of them**.  VP9 in software costs
+about a second and a half a frame here, and when the encoder falls behind
+MediaRecorder discards rather than blocking.  Measured: 285 frames pushed, **34
+in the file**, no error raised anywhere, a container that probes as valid WebM,
+and a duration of 371 s because every surviving frame carries a wall-clock
+timestamp.  It cannot be rescued by re-timing afterwards; the frames are gone.
+
+**Count the frames of anything you produce.**
+`ffprobe -count_frames -select_streams v:0 -show_entries stream=nb_read_frames`
+against the expected number, and the duration against the expected duration.
+Checking the file's magic bytes and looking at stills taken *alongside* the
+recording proves the renderer was right and proves nothing whatever about the
+file.
+
 `canvas.toDataURL()` called in the same tick as the render gives verification
 stills out of the same pass, which is how you check what is in the file without
 being able to play it.
