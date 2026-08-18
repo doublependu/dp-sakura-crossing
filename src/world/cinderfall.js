@@ -135,11 +135,34 @@ const C = {
    * the third sits between them and is what stops the pair reading as a ball
    * inside a ball.
    */
-  burstSize: 5.2,     // reference 3.6
+  /**
+   * Back to the reference's own figure after looking at 5.2 and then 4.2 on
+   * screen: a five-metre radius is ten metres of fireball, and at the eighteen
+   * metres a watcher actually stands from it that is half the frame with its
+   * far side clipped off by the edge.  The animal is big; the explosion does
+   * not have to be bigger.
+   */
+  burstSize: 3.6,
+  /**
+   * Three shells, and they are **offset lobes rather than concentric skins**.
+   *
+   * Concentric was the obvious reading of the original and it is wrong for an
+   * opaque medium: the outer shell is always the biggest, so the two inside it
+   * are never once visible, and the only way to see them is to make everything
+   * translucent -- which is how the first version ended up looking like an
+   * orange gel laid over the school rather than a fire standing in front of it.
+   *
+   * Pushed apart by a fraction of the radius, all three break the silhouette
+   * and each gets its own ink outline.  Which is how the medium actually draws
+   * an explosion: overlapping blobs of flat colour, outlined, not a shaded ball.
+   */
   shells: [
-    { r0: 0.22, r1: 1.00, life: 0.90, color: PAL.red,    hold: 0.55, spin: 0.7 },
-    { r0: 0.16, r1: 0.72, life: 0.62, color: PAL.orange, hold: 0.50, spin: -1.1 },
-    { r0: 0.10, r1: 0.46, life: 0.34, color: 0xfff3d0,   hold: 0.35, spin: 1.6 },
+    { r0: 0.22, r1: 0.94, life: 0.90, color: PAL.red,    hold: 0.55, spin: 0.7,
+      off: [0, 0, 0] },
+    { r0: 0.18, r1: 0.80, life: 0.66, color: PAL.orange, hold: 0.50, spin: -1.1,
+      off: [-0.30, 0.34, 0.12] },
+    { r0: 0.12, r1: 0.52, life: 0.40, color: 0xfff3d0,   hold: 0.40, spin: 1.6,
+      off: [0.30, 0.46, -0.16] },
   ],
   /** Tongues thrown flat out of the crater, which is the part that licks. */
   burstTongues: 16,
@@ -202,6 +225,10 @@ const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _bA = new THREE.Vector3();
 const _bB = new THREE.Vector3();
+const _bC = new THREE.Vector3();
+const _wA = new THREE.Vector3();
+const _wB = new THREE.Vector3();
+const _tv = new THREE.Vector3();
 const _col = new THREE.Color();
 const _colB = new THREE.Color();
 const _dummy = new THREE.Object3D();
@@ -321,10 +348,27 @@ export function createCinderfall({ scene, world, player }) {
     rockGeo, cel({ color: 0x5f5866, bands: 3, tint: 0x5a5378, cache: false }),
     MAX_CASTS * C.chunkCount);
 
-  /** An unlit shell of flat colour -- every layer of fire in this file. */
+  /**
+   * An unlit shell of flat colour -- every layer of fire in this file.
+   *
+   * **It writes depth, and that is the whole difference between fire and a
+   * filter.**  The first version did not, on the usual reflex that anything
+   * transparent should not, and the result was unmistakable once it was on
+   * screen: the ink pass is a screen-space *depth* edge detector, so with no
+   * depth of its own the fireball let the school building's window mullions and
+   * the fence behind it keep their outlines -- drawn on top of the flames.  A
+   * five-metre detonation came out as an orange gel with a building's edges
+   * ruled across it.
+   *
+   * Writing depth costs the fade its correctness for the last fifth of a second
+   * (a nearly-invisible shell still occludes), so `depthWrite` is switched off
+   * per frame once the opacity drops -- see the burst block.  `FrontSide`
+   * because the back of a sphere seen through its own front is the other half
+   * of the same problem.
+   */
   const fireMat = (color, opacity) => flat({
-    color, transparent: true, opacity, depthWrite: false, toneMapped: false,
-    side: THREE.DoubleSide, cache: false,
+    color, transparent: true, opacity, depthWrite: true, toneMapped: false,
+    side: THREE.FrontSide, cache: false,
   });
 
   /* The fireball the cinder flies inside: two shells, and singletons.  Only one
@@ -332,11 +376,11 @@ export function createCinderfall({ scene, world, player }) {
    * longer than a flight -- so a second head would only ever be a duplicate. */
   const head = [
     {
-      mesh: new THREE.Mesh(lumpySphere(2201, { detail: 2, lumps: 0.30, freq: 1.1 }),
+      mesh: new THREE.Mesh(lumpySphere(2201, { detail: 3, lumps: 0.32, freq: 2.1 }),
         fireMat(PAL.orange, 0.85)), s: 1.0, spin: 0.9,
     },
     {
-      mesh: new THREE.Mesh(lumpySphere(3307, { detail: 2, lumps: 0.34, freq: 1.7 }),
+      mesh: new THREE.Mesh(lumpySphere(3307, { detail: 3, lumps: 0.36, freq: 2.7 }),
         fireMat(0xfff3d0, 0.95)), s: 0.62, spin: -1.4,
     },
   ];
@@ -344,10 +388,16 @@ export function createCinderfall({ scene, world, player }) {
   /* The detonation.  Three shells, submitted outer first so the inner ones
    * composite over them -- with `depthWrite` off, submission order is layer
    * order. */
+  /* Detail 3 and a high lump frequency, which is a look rather than a fidelity
+   * choice.  At detail 2 with slow lumps the outer shell came out as a smooth
+   * six-sided slab -- a red polygon, not a fireball.  What an explosion needs
+   * in this medium is a **cauliflower silhouette**: many small billows around
+   * the edge, because the edge is the only thing an unshaded mass has.  1 280
+   * triangles a shell is nothing next to what it buys. */
   const burst = C.shells.map((spec, i) => ({
     spec,
     mesh: new THREE.Mesh(
-      lumpySphere(5100 + i * 811, { detail: 2, lumps: 0.30 + i * 0.04, freq: 1.2 + i * 0.5 }),
+      lumpySphere(5100 + i * 811, { detail: 3, lumps: 0.34, freq: 2.4 + i * 0.6 }),
       fireMat(spec.color, 1)
     ),
   }));
@@ -357,9 +407,12 @@ export function createCinderfall({ scene, world, player }) {
    * where it is, and a centred quad sinks half of itself into the ground every
    * time the trail scrapes a hillside. */
   const tongueGeo = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+  /* `alphaTest` is what lets the tongues write depth: the cut-out is a hard
+   * edge, so the depth they leave is the shape they draw, and the ink pass
+   * finds the outline of every flame instead of the scenery behind it. */
   const flameMat = flat({
     color: 0xffffff, map: flameTex(), transparent: true, opacity: 0.96,
-    alphaTest: 0.34, depthWrite: false, side: THREE.DoubleSide,
+    alphaTest: 0.5, depthWrite: true, side: THREE.DoubleSide,
     toneMapped: false, cache: false,
   });
   /* One cloud for both jobs: the tongues streaming off the cinder and the ones
@@ -456,6 +509,9 @@ export function createCinderfall({ scene, world, player }) {
    * ends up lying on its side.  This is a *cylindrical* billboard about the
    * local up: it always points away from the ground and only spins about that
    * axis to face you, which is what a hand-painted flame does.
+   *
+   * Right for anything burning *on* the ground.  Wrong for the trail -- see
+   * `billboardAlong`.
    */
   function billboardUpright(x, z, cameraPos, out) {
     basisAt(x, z, _up, _east, _north);
@@ -465,6 +521,35 @@ export function createCinderfall({ scene, world, player }) {
     _bB.normalize();
     _bA.crossVectors(_bB, _up).normalize();          // forward, out of the quad
     _basis.makeBasis(_bB, _up, _bA);
+    return out.setFromRotationMatrix(_basis);
+  }
+
+  /**
+   * The same trick, about the **flight path** instead of about the ground.
+   *
+   * The trail was built out of `billboardUpright` first, and one look at it
+   * settled the question: thirty-four vertical tongues standing along an arc
+   * do not read as a stream, they read as a **comb**.  Every one of them
+   * points at the sky, their bases sit on the centre line, and their tips fan
+   * apart -- a row of identical pickets travelling sideways.
+   *
+   * A flame streaming off something moving does not point up.  It points
+   * *backwards*, along the flow, and it is the overlap of a hundred of those
+   * that makes the mass.  So the quad's local +y is the reversed direction of
+   * travel and the roll about it is what faces the camera, which is the same
+   * cylindrical billboard rotated onto a different axis.
+   *
+   * `axis` is in world space, because the arc is a curve on a sphere and the
+   * flat frame's idea of "backwards" drifts from the real one over seven
+   * metres of trail.
+   */
+  function billboardAlong(pointW, axisW, cameraPos, out) {
+    _bA.copy(cameraPos).sub(pointW).normalize();     // toward the camera
+    _bB.crossVectors(axisW, _bA);                    // right
+    if (_bB.lengthSq() < 1e-6) return out;           // looking straight down it
+    _bB.normalize();
+    _bC.crossVectors(_bB, axisW).normalize();        // out of the quad
+    _basis.makeBasis(_bB, axisW, _bC);
     return out.setFromRotationMatrix(_basis);
   }
 
@@ -702,11 +787,30 @@ export function createCinderfall({ scene, world, player }) {
           const sn = s - span * (1 - u);
           if (sn < 0) continue;
           arcPoint(k, sn, _v);
+          positionAt(_v.x, _v.y, _v.z, _wA);
+          /* Backwards along the flow, sampled off the arc itself rather than
+           * assumed -- the cast can climb or dive and the trail has to lie
+           * along whatever it actually did. */
+          arcPoint(k, Math.min(1, sn + 0.03), _tv);
+          positionAt(_tv.x, _tv.y, _tv.z, _wB);
+          _v2.copy(_wA).sub(_wB);
+          if (_v2.lengthSq() < 1e-8) continue;
+          _v2.normalize();
+
           const flick = 1 + C.trailFlicker * Math.sin(clock * 17 + i * 2.4 + k.seed);
           const size = C.trailWidth * trailProfile(u) * flick * burn;
-          _dummy.position.copy(positionAt(_v.x, _v.y - size * 0.35, _v.z, _v2));
-          billboardUpright(_v.x, _v.z, camera.position, _dummy.quaternion);
-          _dummy.scale.set(size * 0.78, size * 1.5, 1);
+          /* Pushed off the centre line by a fixed per-node wobble, so the
+           * tongues make a plume instead of thirty-four sheets stacked on one
+           * plane. */
+          const wob = Math.sin(i * 2.399 + k.seed) * size * 0.22;
+          const wob2 = Math.cos(i * 1.717 + k.seed) * size * 0.18;
+          // the basis has to be built before the wobble, which is expressed in it
+          billboardAlong(_wA, _v2, camera.position, _dummy.quaternion);
+          _dummy.position.copy(_wA)
+            .addScaledVector(_v2, -size * 0.30)      // sink the foot into the flow
+            .addScaledVector(_bB, wob)
+            .addScaledVector(_bC, wob2);
+          _dummy.scale.set(size * 0.9, size * 1.35, 1);
           _dummy.updateMatrix();
           trail.setMatrixAt(nTrail, _dummy.matrix);
           gradient4(FLAME, u * 0.85 + 0.15, _col);
@@ -780,14 +884,23 @@ export function createCinderfall({ scene, world, player }) {
         /* Lifted off the floor by a fifth of its reach, which is the
          * reference's own `_impact.y + scale * 0.28`: a ground detonation is a
          * *dome*, so most of the sphere belongs under the terrain and what is
-         * wanted is the fraction standing above it. */
-        seatUpright(b.mesh, burstK.tx, burstK.ty + scale * 0.28, burstK.tz,
+         * wanted is the fraction standing above it.  The per-shell offset is
+         * scaled by that shell's own radius, so the lobes stay in proportion as
+         * the whole thing blooms. */
+        const o = b.spec.off;
+        seatUpright(b.mesh,
+          wrapX(burstK.tx + o[0] * r),
+          burstK.ty + scale * 0.28 + o[1] * r,
+          burstK.tz + o[2] * r,
           clock * b.spec.spin + i);
         b.mesh.scale.setScalar(r);
         /* It holds, then goes.  A fireball is bright for most of its life and
          * then is not there; fading it linearly from the first frame reads as
          * a dissolve, which is a different thing entirely. */
-        b.mesh.material.opacity = 1 - smoothstep(b.spec.hold, 1, f);
+        const a = 1 - smoothstep(b.spec.hold, 1, f);
+        b.mesh.material.opacity = a;
+        // stop occluding once it has stopped being there
+        b.mesh.material.depthWrite = a > 0.85;
         b.mesh.visible = true;
       }
 

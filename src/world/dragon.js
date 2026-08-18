@@ -523,6 +523,25 @@ export function createDragon({ scene, world, player, cinder, model }) {
     dragon: p,
   });
 
+  /* Start it breathing, in both senses.
+   *
+   * `pets.js` ends its builder with exactly this line and it is not decoration.
+   * Without a clip playing, the mixer writes nothing, and what stands on the
+   * school ground is the **bind pose** -- wings out, legs straight, for however
+   * many seconds pass before the state machine happens to change state and call
+   * `play()` for the first time.
+   *
+   * It is worse than a cosmetic wait here, because `jetOpen()` reads the
+   * `firejet` bone's scale to decide when the jaw has opened, and in the bind
+   * pose that scale is **1.0** -- the value it only ever otherwise reaches at
+   * the peak of `breathe_fire`.  So an un-animated dragon reports a fully open
+   * jet.  Caught in a real browser, on the first frame that was ever rendered:
+   * `debug.jet` came back 0.792 from an animal doing nothing at all.  Every
+   * headless test had missed it, because every headless test forces a state
+   * first and forcing a state plays a clip. */
+  play('idle', { fade: 0 });
+  seat();
+
   /* -------------------------------- seating -------------------------------- */
 
   /**

@@ -185,6 +185,57 @@ That harness is what found the dragon freezing in mid-air at 110 m (the LOD note
 in `world/dragon.js`), the 0.02-second walk state, and the nineteen-of-thirty
 minutes it spent asleep.  None of the three is visible in a screenshot.
 
+**Chrome will render this, and record it, with nothing installed.**  Node 24 has
+a global `WebSocket`, so the DevTools protocol needs no client library; Chrome
+is already on the machine; and the *video encoder is the browser's own*, so
+ffmpeg is not needed either.  Launch it, drive it, and the whole loop is about
+sixty lines:
+
+```
+google-chrome --headless=new --remote-debugging-port=9222 \
+  --enable-unsafe-swiftshader --disable-gpu-vsync --window-size=1280,720 \
+  --user-data-dir=/tmp/chrome-shot about:blank
+```
+
+`fetch('http://127.0.0.1:9222/json/list')` gives the page target and its
+`webSocketDebuggerUrl`; `Runtime.evaluate` with `returnByValue` runs anything in
+the page and hands the answer back; `Page.captureScreenshot` gives a PNG.
+Measured on this machine: SwiftShader draws this scene at **22 ms a frame**, and
+`window.__scene` is up about 17 s after navigation.
+
+For **video**, do not capture wall-clock frames -- pin the world instead:
+
+```js
+s.THREE.Clock.prototype.getDelta = () => 0;      // the page's own loop advances nothing
+const track = canvas.captureStream(0).getVideoTracks()[0];   // 0 = frames pushed by hand
+const mr = new MediaRecorder(new MediaStream([track]), { mimeType: 'video/webm;codecs=vp9' });
+mr.start();
+for (let f = 0; f < frames; f++) {
+  step(1/30);                       // player, ebike, pets, dragon, cinder, world
+  s.pipeline.render();
+  track.requestFrame();             // exactly one encoded frame per rendered one
+  if ((f & 7) === 0) await new Promise((r) => setTimeout(r, 0));   // let the encoder breathe
+}
+```
+
+However long a frame takes to draw, the file plays at exactly 30 fps with no
+judder and no dropped time.  VP9 encoding is the slow part -- about 1.5 s a
+frame, so ten seconds of video is roughly seven minutes of wall clock.  The flat
+cel colours compress absurdly well: 285 frames of 1280x720 came out at 0.79 MB.
+`canvas.toDataURL()` called in the same tick as the render gives verification
+stills out of the same pass, which is how you check what is in the file without
+being able to play it.
+
+**Everything the dragon's fire needed was found by looking at it**, and none of
+it was visible headlessly: the flame trail was a *comb* of upright billboards
+rather than a stream (`billboardAlong`), the fireball did not write depth so the
+ink pass ruled the school building's window mullions straight across it, its
+three shells were concentric and therefore invisible inside each other (they are
+offset lobes now), the burst was half again too big, and the dragon spent its
+first seconds in bind pose because nothing called `play()` at construction --
+which also made `jetOpen()` report a fully open jaw on an animal doing nothing.
+Numbers had been green on all of it.
+
 **`__shot` does not know about the e-bike**, and it has to be stepped by hand for
 the same reason nothing else animates: `__shot` moves the player and re-derives
 `pos.y`, but only `ebike.update()` moves the machine onto it. Set the pose
