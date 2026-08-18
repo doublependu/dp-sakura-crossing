@@ -59,9 +59,14 @@ export function createTouchControls({ onMove, onLook, onAction } = {}) {
   const buttons = el('div', 'touch-buttons', root);
   const corner = el('div', 'touch-corner', root);
 
+  /* `walk` or `ride`: which verbs the three buttons under the right thumb
+   * currently are.  See `setMode`. */
+  let current = 'walk';
+
   const button = (parent, cls, label, action) => {
     const b = el('button', `touch-btn ${cls}`, parent, label);
     b.type = 'button';
+    b.dataset.action = action;
     b.setAttribute('aria-label', action);
     // `pointerdown`, not `click`: the look zone is underneath and a click
     // arrives after a 300 ms wait on some browsers that never got the memo
@@ -69,7 +74,8 @@ export function createTouchControls({ onMove, onLook, onAction } = {}) {
       e.preventDefault();
       e.stopPropagation();
       b.classList.add('down');
-      onAction?.(action);
+      // `dataset`, not the closed-over argument: a button can be relabelled
+      onAction?.(b.dataset.action);
     });
     const up = () => b.classList.remove('down');
     b.addEventListener('pointerup', up);
@@ -87,8 +93,8 @@ export function createTouchControls({ onMove, onLook, onAction } = {}) {
    * middle of the screen and puts a dead patch under the *left* thumb, where
    * the stick is supposed to appear.  The machine is summoned once in a
    * while; the jump is pressed over every kerb. */
-  button(buttons, 'small', 'V', 'ebike');
-  button(buttons, '', 'J', 'jump');
+  const vBtn = button(buttons, 'small', 'V', 'ebike');
+  const jBtn = button(buttons, '', 'J', 'jump');
   const eBtn = button(buttons, 'primary', 'E', 'interact');
   button(corner, 'small', '☰', 'pause');
   button(corner, 'small', 'P', 'planet');
@@ -193,6 +199,29 @@ export function createTouchControls({ onMove, onLook, onAction } = {}) {
     /** Light the interact button when the crosshair is on something. */
     setActionable(on) {
       eBtn.classList.toggle('live', !!on);
+    },
+    /**
+     * Which set of verbs the three buttons are.
+     *
+     * A thumb has room for three and the ride needs a different three, so they
+     * are relabelled rather than added to -- a fourth would reach back past the
+     * middle of a 390 px screen and put a dead patch under the *left* thumb,
+     * which is the argument the row was laid out with in the first place.
+     *
+     * `V` becomes the fire, because the machine cannot be summoned from the
+     * back of a dragon anyway.  `J` stays where it is and means the same thing
+     * it always did -- leave the ground -- which on a flyer is the climb, and
+     * `player.jump()` already routes it there.  `E` never moves.
+     */
+    setMode(mode) {
+      if (mode === current) return;
+      current = mode;
+      const ride = mode === 'ride';
+      vBtn.textContent = ride ? '火' : 'V';
+      vBtn.dataset.action = ride ? 'breathe' : 'ebike';
+      vBtn.setAttribute('aria-label', ride ? 'breathe fire' : 'ebike');
+      jBtn.textContent = ride ? '▲' : 'J';
+      jBtn.setAttribute('aria-label', ride ? 'climb' : 'jump');
     },
   };
 }

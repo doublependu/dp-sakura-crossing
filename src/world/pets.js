@@ -203,6 +203,28 @@ export function createPets({
    */
   const headingTo = (dx, dz) => Math.atan2(-dx, -dz);
 
+  /**
+   * How far an animal is from the player, and the third term is not decoration.
+   *
+   * Everything here used to measure in plan only, which was exactly right while
+   * the player was a walker: a walker's eye is 1.6 m up and the difference
+   * between the flat distance and the real one is a rounding error.  Then the
+   * dragon became rideable, and crossing the town at eighty metres put thirty
+   * animals "within 62 m" of somebody who cannot make out one of them -- thirty
+   * mixers and thirty draw calls for a handful of pixels.
+   *
+   * Only the part of the height difference that is *above* the animal counts,
+   * so nothing changes for anybody standing on the ground, on a roof deck, or
+   * at the bottom of the canal.
+   */
+  function distTo(p) {
+    return Math.hypot(
+      wrapDelta(p.x, player.pos.x),
+      p.z - player.pos.z,
+      Math.max(0, player.pos.y - p.y),
+    );
+  }
+
   /** Signed shortest turn from `a` to `b`. */
   function angleDelta(a, b) {
     let d = b - a;
@@ -873,7 +895,7 @@ export function createPets({
 
       order.length = 0;
       for (const p of pets) {
-        p._d = Math.hypot(wrapDelta(p.x, player.pos.x), p.z - player.pos.z);
+        p._d = distTo(p);
         order.push(p);
       }
       order.sort((a, b) => a._d - b._d);
@@ -881,7 +903,7 @@ export function createPets({
     }
 
     for (const p of pets) {
-      const d = Math.hypot(wrapDelta(p.x, player.pos.x), p.z - player.pos.z);
+      const d = distTo(p);
       const owned = p.state === 'follow' || p.state === 'stay';
 
       /* Far away they are neither drawn nor animated, and they do not think

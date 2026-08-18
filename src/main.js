@@ -215,7 +215,7 @@ async function main() {
   let dragon = null;
   loadDragon().then((model) => {
     if (!model) return;
-    dragon = createDragon({ scene, world, player, cinder, model });
+    dragon = createDragon({ scene, world, player, cinder, model, hud });
   });
 
   // the plate on the east footway asks the HUD to say who made the place
@@ -232,7 +232,11 @@ async function main() {
     (key, model) => pets.materialise(key, model));
 
   player.onInteract = (target) => {
-    // on the machine, E is the way off it, whatever you happen to be looking at
+    /* On something, E is the way off it, whatever you happen to be looking at.
+     * The dragon's version is not a dismount but a request -- in the air it
+     * asks the animal to put you down, and only a second press jumps.  See
+     * `riderE`. */
+    if (dragon?.riding) { dragon.riderE(); return; }
     if (ebike.riding) { ebike.dismount(); return; }
     if (!target) return;
     /* Anything offering more than one thing to say opens the card; anything
@@ -296,6 +300,35 @@ async function main() {
     light.position.copy(origin).add(sunOffset);
   }
 
+  /* --------------------------------- the air ---------------------------------
+   * Fog authored for a walker, read from ninety metres up.
+   *
+   * `44 -> 205` is a street: it puts the far end of the 商店街 in haze and the
+   * hills behind it in more of it, which is the whole look.  From the air
+   * almost everything visible is 60 to 190 m away, i.e. squarely inside that
+   * band, so the town greys out exactly when there is finally enough of it in
+   * frame to be worth looking at.
+   *
+   * So the band opens with altitude and closes again on the way down.  It is
+   * two numbers on a uniform -- nothing recompiles -- and the far end stops at
+   * 300, which is past the 192 m horizon at the ceiling: beyond that the ground
+   * has gone over the curve of the planet and there is nothing left to reveal.
+   */
+  const FOG_GROUND = { near: 44, far: 205 };
+  const FOG_AIR = { near: 90, far: 300 };
+  const FOG_FROM = 20;      // metres up, where it starts to open
+  const FOG_TO = 70;        // and where it is fully open
+  function easeFog(dt) {
+    if (!scene.fog) return;
+    const h = player.pos.y - world.heightAt(player.pos.x, player.pos.z);
+    const f = THREE.MathUtils.clamp((h - FOG_FROM) / (FOG_TO - FOG_FROM), 0, 1);
+    const near = FOG_GROUND.near + (FOG_AIR.near - FOG_GROUND.near) * f;
+    const far = FOG_GROUND.far + (FOG_AIR.far - FOG_GROUND.far) * f;
+    const k = 1 - Math.exp(-2.5 * dt);
+    scene.fog.near += (near - scene.fog.near) * k;
+    scene.fog.far += (far - scene.fog.far) * k;
+  }
+
   /* ------------------------------ planet view ------------------------------ */
   let planetView = false;
   let orbit = 0.6;
@@ -353,6 +386,13 @@ async function main() {
     jump() {
       player.jump();
     },
+    /* `F` is the rider's, and only the rider's.  The animal's own fire is on
+     * its own clock and has been since PLAN_3 took the button away; this hands
+     * one back to somebody sitting on it, which is a different contract with a
+     * different thing doing the deciding. */
+    breathe() {
+      dragon?.riderBreathe();
+    },
   };
 
   /* The card gets first refusal, in the *capture* phase.
@@ -374,6 +414,7 @@ async function main() {
     if (e.repeat) return;
     if (e.code === 'KeyM') act.music();
     if (e.code === 'KeyV') act.ebike();
+    if (e.code === 'KeyF') act.breathe();
     if (e.code === 'KeyP') act.planet();
     // two quiet toggles, handy for seeing what the ink and grade passes do
     if (e.code === 'KeyO') pipeline.enabled.ink = !pipeline.enabled.ink;
@@ -419,6 +460,14 @@ async function main() {
     } else {
       player.lock();
     }
+  };
+
+  /* `R` is "put me back at the opening view", and `player.reset()` asks
+   * whatever is carrying the player to let go before it teleports the camera
+   * across the town.  Both mounts answer the same way: immediately. */
+  player.onDismount = () => {
+    if (dragon?.riding) dragon.dismount({ falling: true });
+    else if (ebike.riding) ebike.dismount();
   };
 
   player.onLockChange = (locked) => hud.setLocked(locked);
@@ -485,9 +534,24 @@ async function main() {
     sky.dome.position.copy(camera.position);
     sky.clouds.position.copy(camera.position);
 
-    const hovered = !planetView && player.active ? player.pick(world.interactables) : null;
-    hud.setPrompt(hovered ? `E  ·  ${hovered.label.replace(/^.*?·\s*/, '')}` : '');
-    touch.setActionable(hovered || ebike.riding);
+    easeFog(dt);
+
+    /* Riding, the crosshair is not a pick: it is an aim, and what is under it
+     * is a dragon's own back.  `E` is intercepted before the hover anyway, so
+     * the only thing a pick would do here is print a prompt about the animal
+     * you are sitting on. */
+    const carried = dragon?.riding ?? false;
+    const hovered = !planetView && player.active && !carried
+      ? player.pick(world.interactables) : null;
+    /* One verb, not two.  The mount's own flash says what `F` is for once, and
+     * the hint line carries it after that; a permanent two-key legend across
+     * the bottom of a game whose whole HUD is a crosshair and one line is the
+     * kind of chrome this world does not have anywhere else. */
+    hud.setPrompt(carried
+      ? 'E  ·  get off'
+      : (hovered ? `E  ·  ${hovered.label.replace(/^.*?·\s*/, '')}` : ''));
+    touch.setActionable(hovered || ebike.riding || carried);
+    touch.setMode(carried ? 'ride' : 'walk');
     hud.update(dt, player.active);
     // flat authoring coordinates, so what the readout says is what the code uses
     hud.setCoords(player.pos, player.yaw, player.pitch, dt);
@@ -555,7 +619,14 @@ async function main() {
         bounce.visible = true;
         // always resync the camera: the rAF loop is throttled when the page is
         // not compositing, so the camera cannot be assumed to match the player
-        player.pos.y = world.heightAt(player.pos.x, player.pos.z);
+        /* ...except on a mount that is holding the player off the ground.
+         * Snapping `pos.y` to the terrain under a dragon at forty metres makes
+         * every flight screenshot a screenshot of the ground it is over, which
+         * is the one thing a flight screenshot must not be.  `alt` is offered
+         * for framing a shot from the air by hand. */
+        if (!player.thirdPerson && opts.y === undefined) {
+          player.pos.y = world.heightAt(player.pos.x, player.pos.z) + (opts.alt ?? 0);
+        }
         player.bob = 0;
         player.applyCamera(0);
       }

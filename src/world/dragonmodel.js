@@ -81,6 +81,14 @@ import { cel } from '../core/toon.js';
 export const HEIGHT = 5.5;
 
 /**
+ * How far the jaw opens, in radians about the hinge measured in `prepare`.
+ *
+ * Read off `breathe_fire` rather than chosen: 0.558 rad from the clip's own
+ * first frame, at t = 1.83 s.  See the note beside `bones.jawHinge`.
+ */
+export const JAW_OPEN = 0.558;
+
+/**
  * How far the authored colours are pulled toward this world's palette, 0..1.
  *
  * **Zero on purpose.**  The model is hand-authored and its greens are a
@@ -208,7 +216,7 @@ export function prepare(gltf) {
 
   const bones = {};
   root.traverse((o) => {
-    if (o.isBone && (o.name === 'firejet' || o.name === 'head' || o.name === 'neck2')) {
+    if (o.isBone && ['firejet', 'head', 'neck2', 'jaw'].includes(o.name)) {
       bones[o.name] = o;
     }
   });
@@ -251,6 +259,36 @@ export function prepare(gltf) {
     };
     bones.headUp = closest(new THREE.Vector3(0, 1, 0));
     bones.headRight = closest(new THREE.Vector3(1, 0, 0));
+
+    /**
+     * And the same question for the jaw, which the ride has to open by hand.
+     *
+     * A rider breathes fire *while flying*, and `breathe_fire` is a three-second
+     * grounded clip -- cross-fading to it mid-air is an animal that stops
+     * flapping, which is an animal falling out of the sky (see `dragon.js`).  So
+     * the jaw is rotated on top of the flight clip instead, exactly the way
+     * `lookAt` rotates the head, and this is the hinge to rotate it about.
+     *
+     * **Both the axis and the angle are measured off the animator's own work
+     * rather than invented.**  The hinge comes out as the bone's local **−x**,
+     * and sampling `jaw.quaternion` through `breathe_fire` against its own first
+     * frame gives a swing of **+0.558 rad about that axis**, reached over a
+     * quarter of a second and held for a second and a half.  `JAW_OPEN` below is
+     * that number, so a hand-driven jaw opens exactly as wide as a keyed one and
+     * cannot be caught disagreeing with it in the same shot.
+     */
+    const jm = new THREE.Matrix3().setFromMatrix4(bones.jaw?.matrixWorld ?? new THREE.Matrix4());
+    if (bones.jaw) {
+      const jworld = local.map((v) => v.clone().applyMatrix3(jm).normalize());
+      let best = 0;
+      let bestDot = -Infinity;
+      for (let i = 0; i < 3; i++) {
+        const d = Math.abs(jworld[i].dot(new THREE.Vector3(1, 0, 0)));
+        if (d > bestDot) { bestDot = d; best = i; }
+      }
+      const sign = jworld[best].dot(new THREE.Vector3(1, 0, 0)) < 0 ? -1 : 1;
+      bones.jawHinge = local[best].clone().multiplyScalar(sign);
+    }
   }
 
   return {
@@ -269,6 +307,16 @@ export function prepare(gltf) {
     bodyR: HEIGHT * 0.33,
     /** What it will step up.  It is five metres tall; a kerb is not an obstacle. */
     rise: HEIGHT * 0.23,
+    /**
+     * Where a rider sits, above the animal's own origin.
+     *
+     * Measured like everything else here: the wing roots are at y = 0.90 in the
+     * bind pose and the shoulders behind them are the only flat part of the
+     * animal, so the seat is 0.95 model units up -- `0.95 / 2.83` of the height,
+     * which is 1.85 m at the shipping size.  `dragon.js` anchors the camera boom
+     * to it and `player.js` measures the eye from it.
+     */
+    saddle: HEIGHT * (0.95 / 2.83),
     /** Half the body's length, for the two-sample ground rake. */
     axle: Math.min(HEIGHT * 0.55, d * 0.42),
     /** The hitbox `E` picks -- the body and a little air, never the wings. */

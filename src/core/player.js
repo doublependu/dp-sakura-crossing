@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { clamp } from './util.js';
-import { R, basisAt, positionAt, wrapX } from '../world/planet.js';
+import { R, basisAt, positionAt, flatAt, wrapX } from '../world/planet.js';
 
 /* ------------------------------------------------------------------ *
  * First-person walker.
@@ -16,6 +16,12 @@ import { R, basisAt, positionAt, wrapX } from '../world/planet.js';
  * It also *rides*: `mount()` puts the walker on the e-bike, which swaps four
  * things and leaves everything else alone -- see `RIDE` below.  The vehicle
  * itself lives in `world/ebike.js`; the walker never looks inside it.
+ *
+ * And it is *carried*: `mount(v, { thirdPerson: true })` makes the walker a
+ * **passenger** -- see `FLY` below and `_passenger`.  That is a bigger change
+ * than the e-bike, because it is the first time the simulation in this file
+ * stops running at all: the dragon owns the position, and everything here
+ * becomes bookkeeping and a camera.
  * ------------------------------------------------------------------ */
 
 const EYE = 1.62;
@@ -87,6 +93,94 @@ export const RIDE = {
   steer: 1.75,      // rad/s on A / D
 };
 
+/**
+ * Being carried, and the camera that comes with it.
+ *
+ * The first third-person view in the game, and the first frame in which the
+ * player is a thing being looked *at*.  There is no rider model -- this game
+ * has never drawn a body -- so what the shot is composed around is the animal,
+ * with the camera where a rider's head would be if it were three metres
+ * further back.
+ *
+ * **The boom is built out of `applyCamera`, not beside it.**  That method
+ * already produces the only correct orientation on a sphere: the surface
+ * quaternion from `basisAt`, times the local look.  So third person keeps all
+ * of it and changes only the *position* -- anchor at the saddle with
+ * `positionAt`, then push back along the camera's own axes.  Do it the other
+ * way round, with a world-space offset added afterwards, and the rig rolls off
+ * the planet within thirty metres of flying.
+ *
+ * `back` and `up` are one composition, and they were **measured off the frame
+ * rather than derived onto it**.  The arithmetic is easy enough -- a point `h`
+ * metres up the animal sits `atan((h - 1.85 - up) / back)` off the camera axis,
+ * and the frame is 46 degrees tall -- but the first pass trusted it, and what
+ * came back from `.shots/ride-1-saddle.jpg` was an animal whose feet sat on the
+ * bottom edge and whose tail was off the bottom of the picture.  At 13.5 and
+ * 2.7 it stands from four degrees above the centre line to nineteen below,
+ * which is the lower half of the frame with air underneath it.
+ *
+ * The plan this was built from had a third number, an aim point 2.5 m ahead of
+ * the saddle.  It is not here: what it was reaching for is the tilt below,
+ * which does the same job for a reason, at the angle the reason implies.
+ */
+export const FLY = {
+  back: 13.5,       // metres behind the saddle
+  up: 2.7,          // and above it
+  stretch: 0.35,    // × how fast it is going, added to the boom
+  ease: 4.0,        // /s the boom springs toward that length
+  /**
+   * How much of the animal's bank and bob the camera takes.
+   *
+   * Both are quoted rather than inherited, and this is the difference between
+   * a camera and a fairground ride: the dragon banks 0.62 rad into a hard turn
+   * and heaves 0.22 m twice a second, and a frame that does all of that with it
+   * is a frame nobody can look at for a minute.  A third of each is enough to
+   * read as flight and little enough to watch.
+   */
+  roll: 0.35,
+  bob: 0.30,
+  rollEase: 5.0,
+  /**
+   * How far the camera looks *down* past where the rider is pointing, and this
+   * is the entry the whole third-person view turned out to depend on.
+   *
+   * **This planet is 160 m in radius and the ground falls off the bottom of the
+   * frame almost at once.**  The depression to the horizon is
+   * `acos(R / (R + h))`: 8 degrees from a walker's eye, 20 from ten metres up,
+   * 33 from thirty, **50 from ninety** -- and the frame is only 23 degrees from
+   * its centre to its bottom edge.  So above about fourteen metres a rider
+   * flying level and looking level sees *no world at all*, which is exactly
+   * what the first flight shots showed: at the ceiling
+   * `.shots/ride-3-ceiling.jpg` was a dragon alone in an empty pink sky.
+   *
+   * So the frame is tilted down by however much it takes to keep the horizon a
+   * fixed angle below the camera's axis at any altitude -- and the consequence
+   * is the part worth understanding: **the rider's look is the flight path, and
+   * the camera is pitched off it.**  Hold the mouse still and the animal flies
+   * level while the view looks out over the world beneath it; push forward and
+   * the dive and the frame go down together.  It also hands `F` a crosshair
+   * that is already pointing at the ground, which is the only place a cinder
+   * can land.
+   */
+  tiltMargin: 0.25,
+  tiltMax: 0.68,
+  tiltEase: 2.0,
+  /** A held climb key is worth this many seconds of climb to a touch tap. */
+  pulse: 0.45,
+  /** rad/s that A and D swing the *view*, which the animal then follows. */
+  steer: 1.2,
+  /**
+   * Metres of air the camera keeps between itself and the ground.
+   *
+   * Hard-clamped, with no easing, and that is on purpose: the correction is
+   * exactly zero at the moment it engages, and the terrain it tracks is
+   * smooth, so the clamp is continuous everywhere it matters.  An eased version
+   * needs `dt` inside `applyCamera`, which would break `__shot` and `reset`,
+   * and buys nothing.
+   */
+  clear: 0.8,
+};
+
 export class Player {
   constructor(camera, domElement, world, opts = {}) {
     this.camera = camera;
@@ -136,8 +230,16 @@ export class Player {
     this.landDip = 0;
 
     /* Riding state.  `ride` is whatever was handed to `mount()` -- the walker
-     * never looks inside it, it only asks whether it is there. */
+     * never looks inside it, it only asks whether it is there.
+     *
+     * A *passenger* is the one exception, and a small one: `thirdPerson` puts
+     * the camera on a boom, and the four numbers it reads back off the mount
+     * (`eye`, `roll`, `bob`, `speedFrac`) are the mount's job to keep current. */
     this.ride = null;
+    this.thirdPerson = false;
+    this.boom = FLY.back;
+    this.camTilt = 0;
+    this.climbPulse = 0;
     this.roll = 0;        // camera bank, driven by the turn rate
     this.yawRate = 0;     // smoothed: the mouse delivers yaw in spikes
     this._prevYaw = this.yaw;
@@ -148,6 +250,8 @@ export class Player {
     this._probe = new THREE.Vector3();
 
     // scratch for the spherical camera frame
+    this._boom = new THREE.Vector3();
+    this._flat = { x: 0, z: 0, y: 0 };
     this._up = new THREE.Vector3();
     this._east = new THREE.Vector3();
     this._north = new THREE.Vector3();
@@ -161,6 +265,8 @@ export class Player {
     this.hovered = null;
     this.onInteract = null;
     this.onLockChange = null;
+    /** Asked to let go of the player, by `reset()`.  Wired in `main.js`. */
+    this.onDismount = null;
 
     this._bind();
     this.applyCamera(0);
@@ -225,11 +331,23 @@ export class Player {
    * the single thing that makes a jump feel like it is ignoring you.
    */
   jump() {
-    if (!this.active || this.ride) return;
+    if (!this.active) return;
+    /* On a flyer the jump key is the climb, and a touch button cannot be
+     * *held* -- it only ever sends a press.  So a press is worth a fixed
+     * fraction of a second of climb, which the mount reads and the walker
+     * counts down; a held key is read directly and this is ignored. */
+    if (this.thirdPerson) { this.climbPulse = FLY.pulse; return; }
+    if (this.ride) return;
     this.buffered = JUMP.buffer;
   }
 
   reset() {
+    /* R is "put me back at the opening view", and it must not leave the camera
+     * on a dragon a hundred metres away with nobody in the saddle.  Whatever is
+     * carrying the player is told to let go first, and it is the immediate kind
+     * of letting go -- an animal politely landing while the view has already
+     * teleported to the crossing is worse than either thing on its own. */
+    if (this.ride) this.onDismount?.();
     this.pos.copy(this.spawn.pos);
     this.yaw = this.spawn.yaw;
     this.pitch = this.spawn.pitch;
@@ -240,9 +358,16 @@ export class Player {
     this.landDip = 0;
   }
 
-  /** Get on / off a vehicle.  See the `RIDE` block at the top of the file. */
-  mount(vehicle) {
+  /**
+   * Get on / off a vehicle.  See `RIDE` at the top of the file, and `FLY` for
+   * what `thirdPerson` additionally changes.
+   */
+  mount(vehicle, opts = {}) {
     this.ride = vehicle;
+    this.thirdPerson = !!opts.thirdPerson;
+    this.boom = FLY.back;
+    this.camTilt = 0;
+    this.climbPulse = 0;
     this.vel.set(0, 0, 0);
     this.bob = 0;
     // a machine does not hop, and a jump left half-served would land the rider
@@ -253,12 +378,99 @@ export class Player {
     this._prevYaw = this.yaw;
   }
 
-  unmount() {
+  /**
+   * Get off.
+   *
+   * `falling` is what a dismount in mid-air passes: the walker is handed back
+   * with the ground a long way below it, and the only honest thing to do is
+   * let the jump integrator have it -- which it already handles, because a
+   * fall is just the second half of a jump and this world has no damage in it.
+   */
+  unmount({ falling = false } = {}) {
     this.ride = null;
+    this.thirdPerson = false;
+    this.climbPulse = 0;
     this.vel.set(0, 0, 0);
     this.roll = 0;
     this.yawRate = 0;
     this._prevYaw = this.yaw;
+    if (falling) {
+      this.airborne = true;
+      this.vy = 0;
+      this.buffered = 0;
+    }
+  }
+
+  /**
+   * The movement axes, from whichever input is live.
+   *
+   * Pulled out of `update` because a passenger needs exactly the same reading
+   * of the same two inputs and there is no version of "the same reading" that
+   * survives being written twice -- the analogue stick in particular, which is
+   * clamped rather than normalised for the reason written at its own call site.
+   */
+  axes() {
+    const k = this.keys;
+    let fwd = 0;
+    let side = 0;
+    if (!this.active) return { fwd, side, sprint: false };
+    if (k.has('KeyW') || k.has('ArrowUp')) fwd += 1;
+    if (k.has('KeyS') || k.has('ArrowDown')) fwd -= 1;
+    if (k.has('KeyD') || k.has('ArrowRight')) side += 1;
+    if (k.has('KeyA') || k.has('ArrowLeft')) side -= 1;
+    return {
+      fwd: clamp(fwd + this.touch.y, -1, 1),
+      side: clamp(side + this.touch.x, -1, 1),
+      sprint: k.has('ShiftLeft') || k.has('ShiftRight') || this.touch.run,
+    };
+  }
+
+  /** Is the climb being asked for -- held key, or a tap on the touch button? */
+  get climbing() {
+    return this.climbPulse > 0 || (this.active && this.keys.has('Space'));
+  }
+
+  /**
+   * A frame as a passenger.
+   *
+   * Everything the walker normally does -- the wish velocity, both collision
+   * passes, the sub-step, the ground follow, gravity, the latitude clamp -- is
+   * **not done**, because the animal underneath is doing all of it and doing it
+   * with a 1.82 m body instead of a 0.34 m disc.  What is left is the view.
+   *
+   * It deliberately does **not** apply the camera.  The mount moves after this
+   * runs (`main.js` updates the player first, then the world), so a camera
+   * placed here would be a frame behind the animal carrying it -- which at
+   * 26 m/s is two thirds of a metre of swim on every frame.  The contract is
+   * that the mount calls `applyCamera` itself once it has seated.
+   */
+  _passenger(dt) {
+    const { side } = this.axes();
+    // A and D swing the view; the animal follows the view.  Same idea as the
+    // e-bike's steering, one level of indirection further out.
+    if (side) this.yaw -= side * FLY.steer * dt;
+
+    this.climbPulse = Math.max(0, this.climbPulse - dt);
+
+    const target = FLY.back * (1 + FLY.stretch * clamp(this.ride?.speedFrac ?? 0, 0, 1.6));
+    this.boom += (target - this.boom) * (1 - Math.exp(-FLY.ease * dt));
+
+    const bank = (this.ride?.roll ?? 0) * FLY.roll;
+    this.roll += (bank - this.roll) * (1 - Math.exp(-FLY.rollEase * dt));
+
+    /* The tilt eases rather than tracking: a climb at four and a half metres a
+     * second walks it from nothing to two thirds of a radian over twenty
+     * seconds, which reads as a camera craning slowly down as the world
+     * shrinks.  Any faster and it reads as the frame slipping. */
+    const tilt = clamp(this.ride?.tilt ?? 0, 0, FLY.tiltMax);
+    this.camTilt += (tilt - this.camTilt) * (1 - Math.exp(-FLY.tiltEase * dt));
+
+    const raw = (this.yaw - this._prevYaw) / Math.max(dt, 1e-4);
+    this._prevYaw = this.yaw;
+    this.yawRate += (raw - this.yawRate) * (1 - Math.exp(-9 * dt));
+
+    this.bob = 0;
+    this.landDip = 0;
   }
 
   /** Push the player out of any collider it overlaps, one axis at a time. */
@@ -289,20 +501,12 @@ export class Player {
   }
 
   update(dt) {
-    const k = this.keys;
-    const riding = this.ride !== null;
-    const sprint = k.has('ShiftLeft') || k.has('ShiftRight') || this.touch.run;
-    const speed = riding ? this.rideSpeed : (sprint ? this.runSpeed : this.walkSpeed);
+    /* Carried.  The walker does not simulate at all -- see `_passenger`. */
+    if (this.thirdPerson) { this._passenger(dt); return; }
 
-    let fwd = 0, side = 0;
-    if (this.active) {
-      if (k.has('KeyW') || k.has('ArrowUp')) fwd += 1;
-      if (k.has('KeyS') || k.has('ArrowDown')) fwd -= 1;
-      if (k.has('KeyD') || k.has('ArrowRight')) side += 1;
-      if (k.has('KeyA') || k.has('ArrowLeft')) side -= 1;
-      fwd = clamp(fwd + this.touch.y, -1, 1);
-      side = clamp(side + this.touch.x, -1, 1);
-    }
+    const riding = this.ride !== null;
+    const { fwd, side, sprint } = this.axes();
+    const speed = riding ? this.rideSpeed : (sprint ? this.runSpeed : this.walkSpeed);
 
     /* On the machine A and D steer rather than strafe.  A scooter that slides
      * sideways at 7.65 m/s is the one artifact a first-person ride cannot get
@@ -453,21 +657,53 @@ export class Player {
     /* No head bob on the machine: the walk cycle is a walk cycle, and at three
      * times walking pace it reads as a lurch rather than as footsteps. */
     const riding = this.ride !== null;
+    const third = this.thirdPerson;
     const amp = riding ? 0 : Math.min(moving / this.walkSpeed, 1) * 0.014;
-    const eye = this.pos.y + (riding ? RIDE.eye : EYE)
-      + Math.sin(this.bob) * amp - this.landDip;
+    /* Carried, the eye is the saddle plus a quoted share of the animal's own
+     * heave -- the mount writes both.  `pos.y` is the animal's feet, so the
+     * whole rig rises and falls with the flight and nothing else has to know. */
+    const eye = third
+      ? this.pos.y + (this.ride?.eye ?? EYE) + (this.ride?.bob ?? 0) * FLY.bob
+      : this.pos.y + (riding ? RIDE.eye : EYE)
+        + Math.sin(this.bob) * amp - this.landDip;
 
     const b = basisAt(this.pos.x, this.pos.z, this._up, this._east, this._north);
     this._basis.makeBasis(this._east, this._up, this._north);
     this._surfaceQ.setFromRotationMatrix(this._basis);
 
-    this._localE.set(this.pitch, this.yaw, this.roll + Math.sin(this.bob * 0.5) * amp * 0.35, 'YXZ');
+    /* Carried, the frame is pitched below the rider's own look -- see
+     * `FLY.tiltMargin`.  Clamped short of straight down, because past that the
+     * boom swings under the animal and the horizon turns over. */
+    const look = third ? clamp(this.pitch - this.camTilt, -1.45, 1.05) : this.pitch;
+    this._localE.set(look, this.yaw, this.roll + Math.sin(this.bob * 0.5) * amp * 0.35, 'YXZ');
     this._localQ.setFromEuler(this._localE);
 
     positionAt(this.pos.x, eye, this.pos.z, this.camera.position);
     this.camera.quaternion.copy(this._surfaceQ).multiply(this._localQ);
     // up follows the surface, so the whole frame rolls as you walk round
     this.camera.up.copy(b.up);
+
+    if (!third) return;
+
+    /* The boom.  Back along the camera's *own* backward axis and up along the
+     * surface normal, both applied to a position that `positionAt` has already
+     * put on the sphere -- so the rig is correct at any longitude with no
+     * second frame to keep in step.  See `FLY`. */
+    this._boom.set(0, 0, 1).applyQuaternion(this.camera.quaternion);
+    this.camera.position
+      .addScaledVector(this._boom, this.boom)
+      .addScaledVector(b.up, FLY.up);
+
+    /* Keep it out of the ground.  One height query at the camera's own flat
+     * point, which is the whole of camera collision here: above 31 m there is
+     * nothing in this world to hit (measured -- every collider carries a top,
+     * and the highest is 30.5), and below it the animal is landing, taking off,
+     * or being flown down a street on purpose. */
+    flatAt(this.camera.position, this._flat);
+    const floor = this.world.heightAt(this._flat.x, this._flat.z) + FLY.clear;
+    if (this._flat.y < floor) {
+      positionAt(this._flat.x, floor, this._flat.z, this.camera.position);
+    }
   }
 
   /** Ray-test the interactable list; returns the closest one in range. */

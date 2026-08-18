@@ -569,8 +569,16 @@ export function createCinderfall({ scene, world, player }) {
    */
   const BUILT = 1.6;
 
-  function canLand(x, z, exclude = null) {
-    if (Math.hypot(wrapDelta(x, player.pos.x), z - player.pos.z) < C.minRange) return false;
+  /**
+   * @param drop  how far *above* the point the caster is, in metres.
+   *
+   * Zero for anything standing on the ground, which is every caller this had
+   * until there was somebody in the air: a rider aiming straight down from
+   * forty metres is making a perfectly good shot, and measuring that drop as a
+   * horizontal zero refuses it for a reason that looks exactly like a bug.
+   */
+  function canLand(x, z, exclude = null, drop = 0) {
+    if (Math.hypot(wrapDelta(x, player.pos.x), z - player.pos.z, drop) < C.minRange) return false;
     if (exclude && Math.hypot(wrapDelta(x, exclude.x), z - exclude.z) < exclude.r) return false;
     return !grid.each(x, z, BUILT, (c) => (
       x > c.x0 - BUILT && x < c.x1 + BUILT && z > c.z0 - BUILT && z < c.z1 + BUILT
@@ -587,7 +595,22 @@ export function createCinderfall({ scene, world, player }) {
    */
   const casts = [];
 
-  function cast(origin, target) {
+  /**
+   * @param opts.speed     m/s, overriding `C.speed` for this cast alone.
+   * @param opts.airburst  detonate in the air and leave the ground alone.
+   *
+   * The rider's shot, over anything `canLand` refuses -- a roof, a tree, a
+   * shopfront, the open sky.  It is the same cinder on the same arc with the
+   * same burst; what it does not do is scorch, crater or throw debris, because
+   * the thing it went off above is somebody's house.  See `riderBreathe`.
+   *
+   * `speed` exists for the same caller and is not a nicety: `C.speed` is 13 m/s,
+   * chosen so a cinder thrown by something *standing still* can be watched all
+   * the way in, and a dragon at boost does 26.  A caster that outruns its own
+   * fire flies through it, so a rider's cast is thrown faster than the animal
+   * throwing it.
+   */
+  function cast(origin, target, opts = {}) {
     if (casts.length >= MAX_CASTS) casts.shift();
     const seed = Math.floor(rng.range(1, 1e6));
     const r = rngKit(seed);
@@ -596,11 +619,12 @@ export function createCinderfall({ scene, world, player }) {
     const record = {
       seed,
       ox: origin.x, oy: origin.y, oz: origin.z,
-      tx: target.x, tz: target.z, ty: world.heightAt(target.x, target.z),
+      tx: target.x, tz: target.z, ty: target.y ?? world.heightAt(target.x, target.z),
+      airburst: !!opts.airburst,
       dist,
       phase: 'travel',
       t: 0,
-      travelTime: Math.max(C.minFlight, dist / C.speed),
+      travelTime: Math.max(C.minFlight, dist / (opts.speed ?? C.speed)),
       spinAxis: new THREE.Vector3(r.range(-1, 1), r.range(-1, 1), r.range(-1, 1)).normalize(),
       emit: 0,
       /* Per chunk: an angle, an elevation and a speed jitter.  Unitless, all
@@ -736,11 +760,16 @@ export function createCinderfall({ scene, world, player }) {
     for (let i = 0; i < C.burstEmbers; i++) {
       spawnEmber(k.tx, k.ty + 0.35, k.tz, C.emberSpeed * rng.range(1.5, 3.6));
     }
+    burstT = 0;
+    burstK = k;
+    /* Everything below this line is the *ground's* half of an impact -- the
+     * shock ring rolling out across it and the mark left behind.  An airburst
+     * has no ground: it goes off over a roof, and both of those would be drawn
+     * flat on whatever is underneath it. */
+    if (k.airburst) return;
     ringT = 0;
     ringX = k.tx;
     ringZ = k.tz;
-    burstT = 0;
-    burstK = k;
     // the older of the two marks is the one recycled
     const s = scorches[0].live && scorches[1].live
       ? (scorches[0].t > scorches[1].t ? scorches[0] : scorches[1])
@@ -820,7 +849,8 @@ export function createCinderfall({ scene, world, player }) {
       }
 
       /* --------------------------- the chunks --------------------------- */
-      if (!travelling) {
+      // debris belongs to a thing that hit the ground
+      if (!travelling && !k.airburst) {
         const e = k.phase === 'impact' ? k.t : C.impactHold + k.t;
         const fwdX = wrapDelta(k.tx, k.ox) / Math.max(k.dist, 0.1);
         const fwdZ = (k.tz - k.oz) / Math.max(k.dist, 0.1);
@@ -907,7 +937,7 @@ export function createCinderfall({ scene, world, player }) {
       /* Tongues thrown flat out of the crater, which is the part that licks.
        * They ride the same instanced cloud as the trail: same quad, same
        * material, same draw call. */
-      for (let i = 0; i < burstK.tongues.length && nTrail < TONGUES; i++) {
+      for (let i = 0; i < (burstK.airburst ? 0 : burstK.tongues.length) && nTrail < TONGUES; i++) {
         const t = burstK.tongues[i];
         const f = clamp((burstT - t.lag) / C.burstTongueLife, 0, 1);
         if (f <= 0 || f >= 1) continue;

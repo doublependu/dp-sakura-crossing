@@ -16,6 +16,54 @@ is reached by extending two files that were already written for it: `RIDE` in
 not*, and the state machine in `world/dragon.js`, which already flies, already
 lands on a chosen spot, and already knows how to open its own jaw.
 
+> ### AMENDED AFTER IMPLEMENTATION
+>
+> This document is the plan as approved, kept as written.  Six things in it
+> turned out to be wrong or incomplete once there was a frame to look at, and
+> §2, §3, §4 and §9 should be read knowing that:
+>
+> 1. **The camera had to be tilted down, and this is the big one.**  §2 says
+>    "pitch belongs to the rider" and refuses to aim the camera off the rider's
+>    look.  That is unlivable on a planet 160 m across: the depression to the
+>    horizon is `acos(R / (R + h))` -- 20 degrees from ten metres up, 33 from
+>    thirty, **50 from ninety** -- and the frame is 23 degrees from its centre
+>    to its bottom edge.  So above about fourteen metres a rider flying level
+>    and looking level sees **no world at all**, which is exactly what the first
+>    flight frame was: a dragon alone in an empty pink sky.  The camera now
+>    pitches below the rider's look by whatever keeps the horizon a quarter
+>    radian under its axis, and the rider's own look became the *flight path*.
+>    See `FLY.tiltMargin` in `core/player.js`.
+> 2. **The airburst is the normal forward shot, not the exception.**  Same
+>    geometry, from §4's end: fired anywhere but steeply down, a cinder never
+>    reaches the ground, because the ground has gone over the curve.  The plan
+>    treats this as an edge case; it is the common one, and the rule it leaves
+>    behind is a good one -- over the town you throw fireworks, and you have to
+>    mean it to leave a mark.
+> 3. **The boom's composition was measured, not derived.**  11.0 / 2.6 put the
+>    animal's feet exactly on the bottom edge with its tail off the picture.
+>    13.5 / 2.7.
+> 4. **The follow gain and the turn cap are different jobs.**  A single gain of
+>    2.4 left the animal a permanent 0.5 rad -- 29 degrees -- behind the camera
+>    for the whole of any held turn, flying along the edge of the frame.  4.5.
+> 5. **`F` on the ground does not play `breathe_fire` either.**  §4 kept the
+>    real clip for a cast made while standing.  Dropped: it locks the rider out
+>    of the controls for three seconds and needs a second trigger path beside
+>    the envelope, to buy a nicer pose for the one case nobody will spend any
+>    time in.  The jaw override is used everywhere.
+> 6. **§9's aim test asserted the wrong thing twice** before it was asserting
+>    anything: first that a shallow ray finds ground (it cannot), then that the
+>    rider's pitch is the camera's (it is not, since amendment 1).  What it
+>    checks now is that the march agrees with `acos(R / (R + h))` in both
+>    directions, which is the only claim that survives either change.
+>
+> Two things the plan did not mention at all and the harness found: a ridden
+> animal had **no latitude clamp**, so ninety seconds of boost put it at
+> z = 1073 -- four times past the pole, where the tangent frame inverts; and
+> `dismount` left `altTarget` alone, which is harmless today and levitates a
+> grounded dragon the moment anything sets it.  Both fixed.
+>
+> Everything else was built as written, including all five decisions in §10.
+
 ---
 
 ## The concern, stated once, then built anyway

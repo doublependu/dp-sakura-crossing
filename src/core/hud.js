@@ -36,6 +36,7 @@ export function createHud({ volume = 0.34, landmarks = [] } = {}) {
   const hint = el('div', 'hint', root,
     `<b>WASD</b> walk &nbsp;·&nbsp; <b>Shift</b> run &nbsp;·&nbsp; <b>Space</b> jump
      &nbsp;·&nbsp; <b>Mouse</b> look &nbsp;·&nbsp; <b>E</b> interact
+     &nbsp;·&nbsp; <b>F</b> breathe fire <i>(riding)</i>
      &nbsp;·&nbsp; <b>V</b> e-bike &nbsp;·&nbsp; <b>P</b> see the planet
      &nbsp;·&nbsp; <b>M</b> music &nbsp;·&nbsp; <b>C</b> coordinates
      &nbsp;·&nbsp; <b>R</b> opening view &nbsp;·&nbsp; <b>Esc</b> release`);
@@ -88,6 +89,7 @@ export function createHud({ volume = 0.34, landmarks = [] } = {}) {
           <span><b>Shift</b> Run</span>
           <span><b>Space</b> Jump</span>
           <span><b>V</b> E-Bike</span>
+          <span><b>F</b> Breathe <small>riding</small></span>
           <span><b>M</b> Music</span>
           <span><b>C</b> Coordinates</span>
         </div>

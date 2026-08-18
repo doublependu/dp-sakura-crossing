@@ -40,8 +40,9 @@ modules, so it needs to be served over HTTP.
 | `W A S D` | walk |
 | `Shift` | run |
 | mouse | look |
-| `E` | interact — and get on / off the e-bike |
+| `E` | interact — and get on / off the e-bike, or off the dragon |
 | `V` | call up the e-bike (again to send it away, or to call it back to you) |
+| `F` | breathe fire — riding the dragon only |
 | `P` | orbit out and look at the whole planet |
 | `M` | music on / off |
 | `C` | show coordinates (flat x/z/y, yaw, and a ready-made camera line) |
@@ -51,13 +52,26 @@ modules, so it needs to be served over HTTP.
 | `Esc` | release the cursor |
 | `O` / `G` | toggle the ink pass / the colour grade (to see what they do) |
 
+**The dragon can be ridden.** It lives on the school ground, 校庭, about ninety
+metres north of the crossing — asleep, wandering, or out on its circuit over the
+hills, in which case you wait or come back. Walk up to it and `E` offers two
+things to do; take *climb on*. Then `W` walks it and `Space` takes a run at the
+sky, the mouse steers and the animal follows a beat later, `Shift` is a boost,
+`F` throws a fireball at whatever the crosshair is on, and `E` asks it to set
+you down — press `E` again during the descent and you jump off instead, which
+is a long way down and perfectly safe. It flies to ninety metres, which on a
+planet this small is high enough to see the whole town curve away underneath
+you, and the view looks down past your own shoulder to find it.
+
 **On a phone or a tablet** the same game is played with two thumbs. There is no
 pointer lock on a touch device — which is why the game used to load, draw
 perfectly and then ignore every tap — so the start card turns on a pad instead:
 the left half of the screen is a stick that appears wherever the thumb lands,
 the right half is drag-to-look, and the buttons sit under the right thumb. The
 stick is **analogue**, so how far it is pushed is how fast you walk; push it
-into the ring to run. `E` and `V` are at the bottom right, `☰` `P` `♪` at the
+into the ring to run. Riding the dragon, the same three buttons become 火
+(breathe), ▲ (climb) and `E` (get off). `E` and `V` are at the bottom right,
+`☰` `P` `♪` at the
 top. Nothing is drawn until it is touched.
 
 The background-music playlist shuffles the tracks in `public/audio/`, plays each

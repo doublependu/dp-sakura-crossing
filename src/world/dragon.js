@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { flat } from '../core/toon.js';
 import { clamp, rngKit } from '../core/util.js';
-import { HEIGHT } from './dragonmodel.js';
-import { basisAt, positionAt, flatAt, wrapX, wrapDelta } from './planet.js';
+import { HEIGHT, JAW_OPEN } from './dragonmodel.js';
+import { R, basisAt, positionAt, flatAt, wrapX, wrapDelta } from './planet.js';
 
 /* ------------------------------------------------------------------ *
  * 竜 -- the dragon.  One of it, and it is the only thing in this world that
@@ -222,6 +222,141 @@ const THROW = [11, 21];
 /** It turns to face the target first if it is further off the nose than this. */
 const TURN_FIRST = 0.5;
 
+/* --------------------------------- the ride --------------------------------- */
+
+/* ------------------------------------------------------------------ *
+ * BEING RIDDEN
+ *
+ * The second thing in this world you can get on, and the first that leaves the
+ * ground with you.  It is built on the e-bike's terms and it is worth saying
+ * what those are, because they are what keep a flying mount inside a game about
+ * walking slowly through a suburb:
+ *
+ *   - **You do not summon it.**  There is no key for a dragon.  You walk the
+ *     ninety metres to 校庭, and it is asleep, or awake, or out on its circuit
+ *     -- and if it is out, you wait or you come back.  Missing it is a real
+ *     outcome, the same way the train's timetable is real.
+ *   - **You borrow it.**  Every autonomous clock is *frozen*, not reset, while
+ *     somebody is on it, and it picks its own life back up mid-thought when
+ *     they get off.  Then it goes home.
+ *   - **It is not a weapon.**  `F` throws the same cinder at the same ground
+ *     under the same veto (`cinder.canLand`), and there is nothing in this
+ *     world to hit.  See `riderBreathe`.
+ *
+ * The flight model is four numbers and one idea: **the animal follows the
+ * camera, and arrives a beat late.**  The rider looks somewhere and the dragon
+ * swings after them at a bounded rate, which is what weight looks like.  The
+ * alternative -- heading *is* yaw, rigidly -- makes five and a half metres of
+ * animal handle like a mouse cursor, and it is the single most common way a
+ * flying mount ends up feeling like a camera with a model glued to it.
+ *
+ * **Altitude is a consequence, not an axis.**  There is no up key and no down
+ * key: climb is `speed · sin(nose)` plus whatever the wings are beating, minus
+ * a sink when nothing is driving it.  You gain height by pointing at the sky
+ * and going, which is the only version of this that teaches itself.
+ * ------------------------------------------------------------------ */
+
+const SADDLE = {
+  cruise: 16.0,     // m/s on W -- a lap of the planet in 63 s
+  boost: 26.0,      // on Shift+W -- a lap in 39 s
+  accel: 3.2,       // m/s² toward the wish speed ...
+  brake: 6.0,       // ... and away from it, because S has to mean something
+  /**
+   * A wing-beat, in m/s of climb, and how long one is worth.
+   *
+   * Held, the key is a steady 4.5 m/s.  Tapped -- which is all a touch button
+   * can send -- it decays over `beatFor`, so one press is one beat.  It is also
+   * what puts the animal in the air at the end of a run-up, whatever the rider
+   * is doing with the key at that moment.
+   */
+  beat: 4.5,
+  beatFor: 0.8,
+  sink: 1.2,        // m/s with nothing driving it
+  /**
+   * The ceiling, over the terrain -- and it is derived rather than chosen.
+   *
+   * `horizonFor(90) = sqrt(2·160·90 + 90²) = 192 m`, and `scene.fog.far` is
+   * 205.  So at ninety metres the ground runs out over the curve of the planet
+   * a whisker before the fog would have taken it: the shot at the ceiling is a
+   * complete little world with a clean edge, and going higher buys nothing but
+   * more of the same disc against more sky.
+   */
+  ceiling: 90.0,
+  turn: 1.1,        // rad/s following the camera ...
+  assist: 1.6,      // ... and with A or D held into it
+  bank: 0.62,
+  nose: 0.5,        // rad of the rider's look the nose will take
+  /** Above this the wings stop hovering and start flying. */
+  flap: 4.0,
+  /** It will not land on ground it cannot stand on; it holds here instead. */
+  hold: 2.0,
+  /** Seconds between rider casts.  At cruise that is 22 m between impacts. */
+  every: 1.4,
+};
+
+/**
+ * The jaw, opened by hand.
+ *
+ * `breathe_fire` is a three-second grounded clip and cross-fading into it at
+ * altitude is an animal that stops flapping, which is an animal falling out of
+ * the sky -- the constraint PLAN_3 wrote down and which does not go away
+ * because somebody is sitting on it.  So the rider's fire does not touch the
+ * mixer: the `jaw` bone is rotated on top of whatever the flight clip is doing,
+ * exactly the way `lookAt` rotates the head, on the envelope below.
+ *
+ * It is deliberately quicker than the animator's own -- 0.76 s against three
+ * seconds -- and that difference is the point.  The dragon's own fire is a
+ * display it decided to put on.  The rider's is a snap of the head, and the
+ * two should not be mistaken for each other in the same shot.
+ *
+ * (The plan this was built from kept the real clip for a cast made while
+ * standing.  It was dropped on contact: playing it locks the rider out of the
+ * controls for three seconds and needs a second trigger path beside this one,
+ * to buy a nicer pose for the one case nobody will spend any time in.)
+ */
+const JAW = { open: 0.18, hold: 0.30, close: 0.28 };
+
+/**
+ * The aim: a march against `heightAt`, not a raycast into the scene.
+ *
+ * The scene is one baked planet mesh and ten thousand props, so a real ray
+ * would test all of them and come back with a *roof* as often as ground -- the
+ * wrong answer for a thing that lands and burns.  `heightAt` is the surface the
+ * animal itself walks on and the one `canLand` vetoes against, so the aim and
+ * the veto agree by construction.
+ *
+ * Coarse then bisected: 70 samples out to 140 m and eight halvings, which
+ * resolves the crossing to 8 mm for 78 height queries.  The step cannot skip
+ * anything that matters -- the field is terrain and decks, and there is nothing
+ * thin and tall in it.
+ */
+const AIM = {
+  reach: 140,
+  step: 2.0,
+  refine: 8,
+  /**
+   * Where a shot at nothing goes off, and why there is such a thing.
+   *
+   * **On this planet most of the frame is past the horizon.**  The depression
+   * angle to it is `acos(R / (R + h))`, and with `R = 160` that is 19.7 degrees
+   * from ten metres up, 32.6 from thirty, and **45.7 from seventy** -- so from
+   * any real flying height, a shot thrown level, or down a shallow slope, or at
+   * anything on the skyline, never reaches the ground at all.  It leaves the
+   * world.  Measured on the first run of the flight harness, which is how this
+   * was found: from 58 m, at 34 degrees down, 140 m of march and the ray was
+   * still 30 m in the air and flattening.
+   *
+   * So the airburst is not the exception the plan took it for -- fired forward,
+   * it is the *normal* shot, and the exception is aiming steeply enough down to
+   * hit something.  Which is a good rule once it is admitted: over the town you
+   * throw fireworks, and you have to mean it to leave a mark.
+   *
+   * It bursts at 55 m rather than at the end of the march because 140 m is
+   * eight seconds of flight and nobody is watching by then.
+   */
+  burst: 55,
+};
+
 /* ---------------------------------- LOD ---------------------------------- */
 
 /**
@@ -254,8 +389,9 @@ const DRAW = 150;
  * @param player  the walker
  * @param cinder  `createCinderfall(...)`, which owns the aim and the effect
  * @param model   the prepared prototype out of `dragonmodel.js`
+ * @param hud     optional, for the line that says what the controls are
  */
-export function createDragon({ scene, world, player, cinder, model }) {
+export function createDragon({ scene, world, player, cinder, model, hud }) {
   if (!model) return null;
 
   const group = new THREE.Group();
@@ -394,6 +530,17 @@ export function createDragon({ scene, world, player, cinder, model }) {
     jetFired: false,
     target: null,
     wild: false,
+    /* The ride.  `mode` is the seam the whole flight model turns on: a ridden
+     * animal is on the ground, taking a run at it, in the air, or being asked
+     * to put itself down -- and nothing else. */
+    ridden: false,
+    mode: 'ground',     // 'ground' | 'runup' | 'air' | 'setdown'
+    runupD: 0,
+    beatT: 0,
+    noseWant: 0,
+    jawT: -1,           // seconds into the jaw envelope; < 0 is shut
+    fireIn: 0,
+    riderTarget: null,
   };
   p.castIn = rng.range(CAST_EVERY_NEAR[0], CAST_EVERY_ALONE[1]);
 
@@ -506,19 +653,494 @@ export function createDragon({ scene, world, player, cinder, model }) {
     return true;
   }
 
+  /* ---------------------------------- the ride ---------------------------------- */
+
+  /**
+   * What the walker is handed when it becomes a passenger.
+   *
+   * Four numbers, and keeping them current is this file's side of the contract
+   * in `player.js`'s `FLY` block: where the saddle is, how hard the animal is
+   * banked, how far through a wing-beat it is, and how fast it is going as a
+   * fraction of cruise.  The walker never looks at anything else in here.
+   */
+  const saddle = {
+    eye: model.saddle,
+    roll: 0,
+    bob: 0,
+    speedFrac: 0,
+    tilt: 0,
+  };
+
+  const _aim = { x: 0, z: 0, y: 0, ground: false };
+  const _hit = { x: 0, z: 0, y: 0 };
+  const _ray = new THREE.Vector3();
+  const _probe = new THREE.Vector3();
+
+  const rideAir = () => p.ridden && (p.mode === 'air' || p.mode === 'setdown');
+
+  /** Anything that would make climbing on now an animation bug. */
+  function canRide() {
+    return !p.ridden && grounded()
+      && p.state !== 'cast' && p.state !== 'turn' && p.state !== 'roar';
+  }
+
+  /**
+   * Write the rider's real position back onto the walker, every frame.
+   *
+   * This is the load-bearing line of the whole feature and it is one function.
+   * `player.pos` is not merely where the walker is: it is the shadow cascade's
+   * centre, the frame the lights are seated in, the pets' LOD and behaviour
+   * distance, this animal's own `dPlayer`, and the minimum range `canLand`
+   * refuses to drop a cinder inside.  Leave the walker standing on the school
+   * ground while the camera flies away and the town goes unlit around a body
+   * nobody can see -- and the dragon LODs itself out at 150 m from its own
+   * rider.
+   *
+   * `vel` goes too, because `pets.js` reads it as "how fast is this thing
+   * coming at me": an animal landing on a playground should scatter what is
+   * standing on it.
+   */
+  function syncRider() {
+    player.pos.x = p.x;
+    player.pos.z = p.z;
+    player.pos.y = p.y + p.alt;
+    player.vel.set(-Math.sin(p.heading) * p.speed, 0, -Math.cos(p.heading) * p.speed);
+    /* **Negated**, and it is a derivation rather than a taste.
+     *
+     * The animal's roll is applied about its own local z in `seat` -- and the
+     * model is authored facing +z while the camera looks down -z, so the model
+     * frame is the camera frame turned half a turn about y.  Their z axes point
+     * in opposite directions, so the same number banks the animal one way and
+     * the frame the other: hand `p.roll` straight over and the horizon tips
+     * *out* of every turn while the dragon leans into it.
+     *
+     * (Checked by hand, because it is the one part of this that a headless
+     * harness cannot see: a left turn is `turnRate > 0`, which gives the animal
+     * a negative roll, which drops its left wing -- and the camera wants a
+     * *positive* roll to tip the horizon the same way.) */
+    saddle.roll = -p.roll;
+    saddle.bob = p.altBob;
+    saddle.speedFrac = p.speed / SADDLE.cruise;
+    /* How far below the rider's own look the frame should sit, which on a
+     * planet this small is most of what makes the view worth having -- see
+     * `FLY.tiltMargin` in `player.js`.  `acos(R / (R + alt))` is the angle down
+     * to the horizon; leaving a quarter radian of it above the camera's axis
+     * keeps the edge of the world in the same place in the frame at every
+     * height, from a standing start to the ceiling. */
+    saddle.tilt = Math.max(0, Math.acos(R / (R + Math.max(0, p.alt))) - 0.25);
+  }
+
+  function mountRider() {
+    if (!canRide()) return;
+    // it does not stay asleep with somebody climbing onto it
+    wake();
+    p.ridden = true;
+    p.state = 'ridden';
+    p.mode = 'ground';
+    p.speed = 0;
+    p.wantSpeed = 0;
+    p.turnRate = 0;
+    p.turnTarget = 0;
+    p.sway = 0;
+    p.runupD = 0;
+    p.beatT = 0;
+    p.noseWant = 0;
+    p.jawT = -1;
+    p.fireIn = 0;
+    p.riderTarget = null;
+    p.target = null;
+    /* A snap, for the e-bike's reason: while riding, the view *is* the
+     * direction of travel, so anything else starts the rider looking off the
+     * animal's flank at a creature walking somewhere else. */
+    player.yaw = p.heading;
+    player.pitch = 0;
+    player.mount(saddle, { thirdPerson: true });
+    syncRider();
+    player.applyCamera(0);
+    play('idle', { fade: 0.3 });
+    hud?.flash('りゅう  ·  W walk  ·  Space fly  ·  F breathe  ·  E get off', 4200);
+  }
+
+  /**
+   * Step off, sideways, and check there is somewhere to step to.
+   *
+   * The e-bike's dismount with a bigger animal in the middle of it: left, then
+   * right, then back off the tail, each tried for room and for a step the
+   * walker could have taken on foot.  3.2 m clears the body -- `bodyR` is
+   * 1.82 -- so the rider is not left standing inside the thing they were on.
+   */
+  function stepOff() {
+    const feet = p.y;
+    const rx = Math.cos(p.heading), rz = -Math.sin(p.heading);
+    const fx = -Math.sin(p.heading), fz = -Math.cos(p.heading);
+    const d = model.bodyR + 1.4;
+    for (const [dx, dz] of [[-rx * d, -rz * d], [rx * d, rz * d], [-fx * d * 1.3, -fz * d * 1.3]]) {
+      const x = wrapX(p.x + dx);
+      const z = p.z + dz;
+      if (!free(x, z, 0.4, feet)) continue;
+      if (Math.abs(world.heightAt(x, z, feet) - feet) > 0.6) continue;
+      player.pos.x = x;
+      player.pos.z = z;
+      player.pos.y = world.heightAt(x, z, feet);
+      return;
+    }
+    // nowhere clear: leave them standing where the animal is rather than
+    // pushing them into whatever the three probes just refused
+    player.pos.y = world.heightAt(p.x, p.z, feet);
+  }
+
+  /**
+   * Get off, and hand the animal back its own life.
+   *
+   * `falling` is the mid-air version: the rider is released at the saddle and
+   * the walker's own gravity integrator takes it from there -- a fall is the
+   * second half of a jump, `player.js` already integrates one, and this world
+   * has no damage in it and is not about to grow any.
+   */
+  function dismount({ falling = false } = {}) {
+    if (!p.ridden) return;
+    const air = p.mode !== 'ground';
+    p.ridden = false;
+    p.mode = 'ground';
+    p.jawT = -1;
+    p.riderTarget = null;
+    p.beatT = 0;
+
+    if (falling && air) {
+      player.unmount({ falling: true });
+      player.pos.y = p.y + p.alt + model.saddle;
+    } else {
+      player.unmount();
+      stepOff();
+    }
+
+    /* Whatever state it is handed, it is one the file already knows how to be
+     * in.  Airborne it is `fly` with `going` false, which *is* "head home and
+     * land at the roost"; on the ground away from home it is given a short trip
+     * clock, so it takes off and comes back round the circuit in its own time
+     * rather than teleporting or standing there forever. */
+    if (p.alt > 0.5) {
+      p.state = 'fly';
+      p.going = false;
+      p.altTarget = CRUISE;
+      play('fly_forward', { fade: 0.5 });
+    } else {
+      p.alt = 0;
+      /* And the *target* with it.  Nothing writes `altTarget` while the ride
+       * owns the altitude, so it is whatever the animal last wanted -- which is
+       * zero in every path that can reach a mount today, and a grounded animal
+       * silently levitating back to a stale target if that ever stops being
+       * true.  Caught with the harness's `teleport(x, z, alt)`, which is
+       * exactly that "ever". */
+      p.altTarget = 0;
+      p.state = 'idle';
+      p.stateIn = rng.range(2, 5);
+      p.homeT = 0;
+      const home = Math.hypot(wrapDelta(p.x, ROOST.x), p.z - ROOST.z);
+      if (home > ROOST.r) p.tripIn = rng.range(4, 9);
+      play('idle', { fade: 0.4 });
+    }
+    hud?.flash('りゅう  ·  ありがとう', 1600);
+  }
+
+  /**
+   * `E`, while riding.
+   *
+   * In the air it does not throw you off -- it asks the animal to put you down,
+   * and the animal is better at that than you are: `findSpot` is the same ring
+   * search that stops it choosing the inside of the gymnasium.  A second press
+   * during the descent is the escape hatch, and the only way out if the rider
+   * has flown somewhere the landing search cannot resolve.
+   */
+  function riderE() {
+    if (!p.ridden) return;
+    if (p.mode === 'ground') { dismount(); return; }
+    if (p.mode === 'setdown') { dismount({ falling: true }); return; }
+    p.mode = 'setdown';
+    p.touch = findSpot(p.x, p.z, model.bodyR);
+    p.landT = 0;
+    hud?.flash('りゅう  ·  setting down  ·  E again to jump', 2400);
+  }
+
+  /* --------------------------------- the jaw --------------------------------- */
+
+  /**
+   * Open the jaw on top of whatever the mixer just wrote.
+   *
+   * Applied between `mixer.update()` and the matrix flush in `seat`, which is
+   * what layering anything on an animation means here -- the same slot, and the
+   * same reason, as `lookAt` directly above.  The hinge and the angle are both
+   * measured off the model in `dragonmodel.js`; nothing here is a guess about
+   * somebody else's rig.
+   */
+  function applyJaw() {
+    const jaw = model.bones.jaw;
+    if (!jaw || !model.bones.jawHinge || p.jawT < 0) return;
+    const t = p.jawT;
+    let e;
+    if (t < JAW.open) e = t / JAW.open;
+    else if (t < JAW.open + JAW.hold) e = 1;
+    else e = clamp(1 - (t - JAW.open - JAW.hold) / JAW.close, 0, 1);
+    // eased at both ends, or a jaw starts and stops dead on a hinge
+    e = e * e * (3 - 2 * e);
+    _lookQ.setFromAxisAngle(model.bones.jawHinge, JAW_OPEN * e);
+    jaw.quaternion.multiply(_lookQ);
+  }
+
+  /* --------------------------------- the aim --------------------------------- */
+
+  /**
+   * What ground the crosshair is on.  See `AIM`.
+   *
+   * Marched in *world* space and converted back with `flatAt` at every sample,
+   * which is not a detail on a planet this small: 140 m is fifty degrees of arc
+   * at `R = 160`, so a straight line in the frame is a curve in the flat
+   * coordinates everything else here is written in.  March it flat and a shot
+   * at the horizon lands in the wrong postcode.
+   *
+   * `ground` false means the ray never came down -- you are looking at sky --
+   * and the caller turns that into an airburst at the end of the march.
+   */
+  function aimPoint(out) {
+    const cam = player.camera;
+    _ray.set(0, 0, -1).applyQuaternion(cam.quaternion);
+    let prev = 0;
+    for (let d = 2.0; d <= AIM.reach; d += AIM.step) {
+      _probe.copy(cam.position).addScaledVector(_ray, d);
+      flatAt(_probe, _hit);
+      if (_hit.y <= world.heightAt(wrapX(_hit.x), _hit.z)) {
+        let lo = prev;
+        let hi = d;
+        for (let i = 0; i < AIM.refine; i++) {
+          const mid = (lo + hi) * 0.5;
+          _probe.copy(cam.position).addScaledVector(_ray, mid);
+          flatAt(_probe, _hit);
+          if (_hit.y <= world.heightAt(wrapX(_hit.x), _hit.z)) hi = mid; else lo = mid;
+        }
+        _probe.copy(cam.position).addScaledVector(_ray, hi);
+        flatAt(_probe, _hit);
+        out.x = wrapX(_hit.x);
+        out.z = _hit.z;
+        out.y = world.heightAt(out.x, out.z);
+        out.ground = true;
+        return out;
+      }
+      prev = d;
+    }
+    _probe.copy(cam.position).addScaledVector(_ray, AIM.burst);
+    flatAt(_probe, _hit);
+    out.x = wrapX(_hit.x);
+    out.z = _hit.z;
+    out.y = _hit.y;
+    out.ground = false;
+    return out;
+  }
+
+  /**
+   * `F`.
+   *
+   * **It always fires.**  The animal picking its own target can afford to be
+   * refused -- it just picks again -- but a rider has already aimed, and a
+   * silent refusal is a broken button.  So the veto does not decide *whether*,
+   * it decides *what arrives*: legal ground gets the cast exactly as the animal
+   * throws it, and anything else -- a rooftop, a tree, a shopfront, the sky --
+   * gets the same cinder bursting in the air a metre short of it, with no
+   * scorch, no crater and no debris.  Nobody's shop gets a burn mark and `F`
+   * over the town is a firework rather than a dead key.
+   *
+   * The minimum range goes three-dimensional while airborne, which is one
+   * argument to `canLand`: straight down from forty metres is a perfectly good
+   * shot, and measuring that drop as a horizontal zero is the sort of refusal
+   * that looks exactly like a bug.
+   */
+  function riderBreathe() {
+    if (!p.ridden || p.fireIn > 0) return false;
+    const t = aimPoint(_aim);
+    const drop = Math.max(0, (p.y + p.alt) - t.y);
+    const legal = t.ground
+      && cinder.canLand(t.x, t.z, { x: p.x, z: p.z, r: model.bodyR + 2 }, drop);
+    p.fireIn = SADDLE.every;
+    p.riderTarget = {
+      x: t.x, z: t.z, y: t.y, airburst: !legal,
+      // it has to beat the animal that threw it -- see `cast`
+      speed: Math.max(16, p.speed + 12),
+    };
+    p.jawT = 0;
+    p.jetFired = false;
+    return true;
+  }
+
+  /* ------------------------------ the flight model ------------------------------ */
+
+  /**
+   * One ridden frame's worth of decisions.
+   *
+   * It sets the same three things every other state in this file sets --
+   * `wantSpeed`, `turnTarget` and where the animal is in the air -- and then
+   * falls through into exactly the same shared tail, which is why a ridden
+   * dragon collides, steps, rakes to the ground and picks its clip rate through
+   * the code that was already there.
+   */
+  function rideThink(dt) {
+    const inp = player.axes();
+    const climb = player.climbing;
+    p.fireIn = Math.max(0, p.fireIn - dt);
+    if (p.jawT >= 0) {
+      p.jawT += dt;
+      if (p.jawT > JAW.open + JAW.hold + JAW.close) p.jawT = -1;
+    }
+
+    /* Follow the camera, a beat late.  The cap is the whole feel of the thing:
+     * 1.1 rad/s is a wide, deliberate turn for something with a seven-metre
+     * span, A or D held into it buys 1.6, and at boost it tightens by up to
+     * forty per cent less, because speed costs agility everywhere else in the
+     * world and should here. */
+    const fast = clamp((p.speed - SADDLE.cruise) / (SADDLE.boost - SADDLE.cruise), 0, 1);
+    const cap = (inp.side ? SADDLE.assist : SADDLE.turn) * (rideAir() ? 1 - fast * 0.4 : 1);
+    /* The gain sets the *steady* lag, and the cap sets how fast it can ever
+     * turn.  They are different jobs and the first pass conflated them: at a
+     * gain of 2.4, holding D -- which swings the view at 1.2 rad/s -- settled
+     * the animal 1.2/2.4 = 0.5 rad behind the camera and left it there, which
+     * `.shots/ride-4-bank.jpg` showed as a dragon flying along the right-hand
+     * edge of the frame for the whole turn.  At 4.5 the sustained lag is 15
+     * degrees, and a *whipped* view still leaves the animal behind for a second
+     * because the cap, not the gain, is what stops it following. */
+    p.turnTarget = clamp(angleDelta(p.heading, player.yaw) * 4.5, -cap, cap);
+
+    if (climb) p.beatT = SADDLE.beatFor;
+    p.beatT = Math.max(0, p.beatT - dt);
+
+    switch (p.mode) {
+      case 'ground': {
+        p.wantSpeed = inp.fwd > 0 ? (inp.sprint ? RUN : WALK) : 0;
+        p.noseWant = 0;
+        if (climb) {
+          /* It takes a run at it.  Driven rather than scripted: the run-up ends
+           * when the ground runs out or twelve body-lengths have gone by, so
+           * asking for the sky from a corner of the school ground visibly costs
+           * the animal a run across it first. */
+          p.mode = 'runup';
+          p.runupD = 0;
+        }
+        break;
+      }
+
+      case 'runup': {
+        p.wantSpeed = RUN;
+        p.noseWant = 0;
+        p.runupD += p.speed * dt;
+        if (p.runupD >= RUNUP || blockedAhead()) {
+          p.mode = 'air';
+          // whatever the rider is doing with the key at this instant, the
+          // animal gets the beat that puts it in the air
+          p.beatT = SADDLE.beatFor;
+        }
+        break;
+      }
+
+      case 'air': {
+        const throttle = inp.fwd > 0 ? (inp.sprint ? SADDLE.boost : SADDLE.cruise) : 0;
+        p.wantSpeed = inp.fwd < 0 ? 0 : throttle;
+        p.noseWant = clamp(player.pitch, -SADDLE.nose, SADDLE.nose);
+
+        const lift = SADDLE.beat * (p.beatT / SADDLE.beatFor);
+        let vy = p.speed * Math.sin(p.noseWant) + lift;
+        if (!throttle && lift <= 0.01) vy -= SADDLE.sink;
+        p.alt = clamp(p.alt + vy * dt, 0, SADDLE.ceiling);
+
+        if (p.alt <= 0.35 && vy <= 0) {
+          if (walkable(p.x, p.z, p.y)) {
+            p.alt = 0;
+            p.mode = 'ground';
+            // it arrives running rather than stopping dead; the brake does the rest
+            p.speed = Math.min(p.speed, RUN);
+          } else {
+            // it will not put its feet inside a building: hold, and let the
+            // rider move it somewhere it can stand
+            p.alt = Math.max(p.alt, SADDLE.hold);
+          }
+        }
+        break;
+      }
+
+      case 'setdown': {
+        /* The animal flying itself down, with the rider watching.  The approach
+         * is the one the file already learned the hard way -- slow *into* the
+         * spot so the turn tightens as the gap closes, and let the tolerance
+         * grow with time so a bad geometry is an untidy landing rather than an
+         * orbit that never ends.  See `case 'landing'`. */
+        p.landT += dt;
+        const gap = Math.hypot(wrapDelta(p.touch.x, p.x), p.touch.z - p.z);
+        const reach = TOUCH_REACH + p.landT * 1.5;
+        steerToward(p.touch.x, p.touch.z, 2.0);
+        p.wantSpeed = clamp(gap * 0.7, 0, SADDLE.cruise * 0.35);
+        p.noseWant = 0;
+        const want = gap <= reach ? 0 : Math.min(p.alt, 2.0);
+        p.alt += clamp(want - p.alt, -CLIMB * 1.4 * dt, CLIMB * dt);
+        if (p.alt < 0.35) {
+          p.alt = 0;
+          p.mode = 'ground';
+          dismount();
+        }
+        break;
+      }
+    }
+  }
+
+  /** Which clip a ridden animal is playing, and how fast. */
+  function rideClip() {
+    if (p.mode === 'ground') {
+      if (p.speed > 0.25) {
+        const running = p.speed > (WALK + RUN) * 0.5;
+        play(running ? 'run' : 'walk',
+          { rate: clamp(p.speed / (running ? RUN : WALK), 0.5, 1.5), fade: 0.3 });
+      } else {
+        play('idle', { fade: 0.35 });
+      }
+      return;
+    }
+    if (p.mode === 'runup') {
+      play('run', { rate: clamp(p.speed / RUN, 0.6, 1.5), fade: 0.25 });
+      return;
+    }
+    if (p.alt < SADDLE.flap || p.speed < 3) {
+      play('hover', { rate: 1, fade: 0.35 });
+      return;
+    }
+    /* There is no glide clip in the file, so a dive with the throttle off drops
+     * the beat to 0.45 and lets the wings sweep slowly instead.  It reads as a
+     * glide, it costs nothing, and the alternative -- holding a pose out of
+     * `fly_forward` -- is only worth building if this does not convince. */
+    const driven = p.wantSpeed > 0.01;
+    play('fly_forward', {
+      rate: driven ? clamp(0.75 + p.speed / 40, 0.75, 1.35) : (p.pitch < -0.08 ? 0.45 : 0.8),
+      fade: 0.4,
+    });
+  }
+
   const label = () => {
+    if (p.ridden) return 'りゅう  ·  get off';
     if (p.state === 'sleep') return 'りゅう  ·  asleep';
+    if (canRide()) return 'りゅう  ·  climb on';
 
     return 'りゅう  ·  say hello';
   };
 
-  /* One thing to say to it, so `E` never opens a card -- `main.js` calls
-   * `action` directly when there is only one option, which is the same path
-   * the cat on the garden wall has always taken. */
+  /* One thing to say to it, or two once there is somewhere to sit.
+   *
+   * `main.js` opens the choice card for anything offering more than one option
+   * and calls `action` directly for anything offering one, which is the path
+   * the cat on the garden wall has always taken -- so the whole mount UI is an
+   * extra entry in this array and no new widget anywhere. */
   world.interactables.push({
     hitbox: hit,
     get label() { return label(); },
-    get options() { return [{ key: 'hello', label: 'say hello', action: greet }]; },
+    get options() {
+      const hello = { key: 'hello', label: 'say hello', action: greet };
+      return canRide()
+        ? [hello, { key: 'ride', label: 'climb on', action: mountRider }]
+        : [hello];
+    },
     action: greet,
     dragon: p,
   });
@@ -639,7 +1261,157 @@ export function createDragon({ scene, world, player, cinder, model }) {
 
   /* -------------------------------- per frame -------------------------------- */
 
+  /**
+   * A ridden frame, or an unridden one, and then the part that is the same.
+   *
+   * `decide` is everything the animal chooses for itself and `rideThink` is
+   * everything the rider chooses for it; both leave the same three variables
+   * behind -- `wantSpeed`, `turnTarget` and where the animal is in the air --
+   * and the tail below moves, collides, rakes and animates whatever it finds
+   * in them.  Which is the reason a ridden dragon needs no second movement
+   * system: it is the same one, driven from the other end.
+   */
   function think(dt, dPlayer) {
+    if (p.state === 'ridden') rideThink(dt);
+    else if (!decide(dt, dPlayer)) return;
+
+    /* --------------------------- shared from here down --------------------------- */
+    const ridden = p.state === 'ridden';
+
+    p.turnRate += (p.turnTarget - p.turnRate) * (1 - Math.exp(-2.2 * dt));
+    const airborne = p.state === 'fly' || p.state === 'takeoff'
+      || p.state === 'landing' || rideAir();
+    // a ridden animal turns under the camera even standing still
+    if (p.wantSpeed > 0.01 || airborne || ridden) p.heading += p.turnRate * dt;
+    /* Looking around: a slow sway of the whole body off the heading it will
+     * leave on, applied at draw time rather than to the heading, so the
+     * direction it walks off in is the one it chose. */
+    p.swayT += dt;
+    // not while somebody is on it: an animal swinging its shoulders 0.4 rad
+    // under a stationary camera reads as the camera drifting
+    const swaying = p.wantSpeed < 0.01 && !airborne && !ridden;
+    const swayTarget = swaying
+      ? Math.sin(p.swayT * 0.7) * 0.4 + Math.sin(p.swayT * 0.31) * 0.16
+      : 0;
+    p.sway += (swayTarget - p.sway) * (1 - Math.exp(-2.4 * dt));
+
+    /* An exponential ease is right for an animal deciding to walk somewhere
+     * and wrong for a throttle: it never quite arrives, and the difference
+     * between cruise and boost is exactly the thing a rider is asking for.  So
+     * the ride integrates a real acceleration, and brakes harder than it
+     * accelerates for the same reason the e-bike does -- S has to be able to
+     * stop you before the thing you are looking at. */
+    if (ridden) {
+      const rate = (p.wantSpeed > p.speed ? SADDLE.accel : SADDLE.brake) * dt;
+      p.speed += clamp(p.wantSpeed - p.speed, -rate, rate);
+    } else {
+      p.speed += (p.wantSpeed - p.speed) * (1 - Math.exp(-2.6 * dt));
+    }
+
+    /* What is in front of it.  On the ground this is the pets' three-probe
+     * steer; in the air it is the same probe at its own altitude, which is the
+     * whole difference between flying and walking here -- `free` already takes
+     * the height it is asked from, so at eleven metres it simply passes over
+     * the things whose tops are beneath it. */
+    if (p.speed > 0.05) {
+      const lead = model.bodyR + 1.4;
+      const fx = -Math.sin(p.heading), fz = -Math.cos(p.heading);
+      const probeY = p.y + p.alt;
+      const ahead = airborne
+        ? !free(wrapX(p.x + fx * lead), p.z + fz * lead, model.bodyR, probeY)
+        : !walkable(wrapX(p.x + fx * lead), p.z + fz * lead, p.y);
+      /* The turn-away is the animal's, not the rider's.  Above 31 m it can
+       * never fire -- measured: every collider in the world carries a top and
+       * the highest is 30.5 -- and below it, an autopilot that swings you off
+       * the roof you were aiming at is worse than the bump.  A ridden animal
+       * still *blocks* on the per-axis test below; it just does not steer
+       * itself out of trouble somebody else chose. */
+      if (ahead && !ridden) {
+        const test = (h) => {
+          const hx = wrapX(p.x - Math.sin(h) * lead), hz = p.z - Math.cos(h) * lead;
+          return airborne ? free(hx, hz, model.bodyR, probeY) : walkable(hx, hz, p.y);
+        };
+        const turn = test(p.heading + 0.9) ? 1 : test(p.heading - 0.9) ? -1 : rng.sign() * 2;
+        p.turnTarget = turn * 1.8;
+        p.turnRate = p.turnTarget;
+        p.speed *= 0.6;
+      }
+
+      const step = p.speed * dt;
+      const nx = wrapX(p.x + fx * step);
+      const nz = p.z + fz * step;
+      // one axis at a time, so a corner slides instead of stopping dead
+      if (airborne) {
+        if (free(nx, p.z, model.bodyR, probeY)) p.x = nx;
+        if (free(p.x, nz, model.bodyR, probeY)) p.z = nz;
+      } else {
+        if (walkable(nx, p.z, p.y)) p.x = nx;
+        if (walkable(p.x, nz, p.y)) p.z = nz;
+      }
+    }
+
+    /* Latitude, which only a ridden animal can ever reach the end of.
+     *
+     * The world wraps in x forever and is bounded in z -- `bounds` is a quarter
+     * of the circumference either side of the equator, 241 m, which is the same
+     * fence `player.js` holds the walker behind.  Nothing autonomous here goes
+     * more than 140 m from the school, so this never mattered until somebody
+     * could point the animal north and hold W: measured, on the first run of
+     * the flight harness, ninety seconds of boost put it at **z = 1073**, which
+     * is four times past the pole -- and past the pole `positionAt` folds back
+     * on itself and the tangent frame the whole camera is built on inverts.
+     * It slides along the fence, exactly as a walker does. */
+    if (ridden) p.z = clamp(p.z, world.bounds.z0, world.bounds.z1);
+
+    // the ground, eased exactly the way the player eases onto it
+    const groundY = world.heightAt(p.x, p.z, p.y);
+    p.y += (groundY - p.y) * (1 - Math.exp(-14 * dt));
+
+    /* Height, bob and bank.
+     *
+     * The altitude is measured over the *terrain*, so the circuit follows the
+     * hill up rather than flying into A1's 16.5 m of summit.  The bob is a
+     * displacement added at draw time and never integrated, or it climbs half
+     * a metre every time the sine spends longer positive than negative --
+     * `pets.js` learned that one first. */
+    const climbing = p.altTarget - p.alt;
+    // a rate rather than an exponential ease: a climb-out that never quite
+    // arrives leaves the take-off state hanging on an asymptote.  A ridden
+    // animal has already set its own altitude in `rideThink`, out of the nose
+    // and the wings, so there is no target to chase.
+    if (!ridden) {
+      p.alt += clamp(climbing, -CLIMB * 1.4 * dt, CLIMB * dt);
+      if (Math.abs(p.altTarget - p.alt) < 0.02) p.alt = p.altTarget;
+    }
+    p.altBob = airborne ? Math.sin(p.swayT * 1.6) * 0.22 : 0;
+
+    if (rideAir()) {
+      // carried, the nose is the rider's look and the bank is the turn it is
+      // actually making -- 0.8 of the look, so the animal is never quite as
+      // steep as the camera and the two read as animal and rider
+      p.pitch += (p.noseWant * 0.8 - p.pitch) * (1 - Math.exp(-4 * dt));
+      p.roll += (clamp(-p.turnRate * 0.55, -SADDLE.bank, SADDLE.bank) - p.roll)
+        * (1 - Math.exp(-3.5 * dt));
+    } else if (airborne) {
+      // nose up on the climb, down on the run in -- the read is the wing, but
+      // the attitude is what makes it flight rather than sliding sideways
+      p.pitch += (clamp(climbing * 0.22, -0.3, 0.35) - p.pitch) * (1 - Math.exp(-3 * dt));
+      p.roll += (clamp(-p.turnRate * 0.55, -0.6, 0.6) - p.roll) * (1 - Math.exp(-3 * dt));
+    } else {
+      p.pitch += (groundPitch() - p.pitch) * (1 - Math.exp(-8 * dt));
+      p.roll += (0 - p.roll) * (1 - Math.exp(-4 * dt));
+    }
+
+    /* The clip's rate follows the speed actually achieved: an animal shoved
+     * down to a crawl by an obstacle probe should not keep marching on the
+     * spot. */
+    if (ridden) rideClip();
+    else if (p.state === 'wander') play('walk', { rate: clamp(p.speed / WALK, 0.5, 1.6) });
+    else if (p.state === 'runup') play('run', { rate: clamp(p.speed / RUN, 0.6, 1.5) });
+  }
+
+  /** What the animal decides on its own.  False means the frame is over. */
+  function decide(dt, dPlayer) {
     /* ------------------------------ the fire ------------------------------ */
 
     if (p.state === 'turn') {
@@ -650,7 +1422,7 @@ export function createDragon({ scene, world, player, cinder, model }) {
       p.wantSpeed = 0;
       if (p.target) steerToward(p.target.x, p.target.z, 2.6);
       if (p.turnT <= 0) begin();
-      return;
+      return false;
     }
 
     if (p.state === 'cast') {
@@ -668,7 +1440,7 @@ export function createDragon({ scene, world, player, cinder, model }) {
         p.wild = false;
         play('idle', { fade: 0.35 });
       }
-      return;
+      return false;
     }
 
     /* ------------------------------ being crowded ------------------------------ */
@@ -938,93 +1710,7 @@ export function createDragon({ scene, world, player, cinder, model }) {
       }
     }
 
-    /* --------------------------- shared from here down --------------------------- */
-
-    p.turnRate += (p.turnTarget - p.turnRate) * (1 - Math.exp(-2.2 * dt));
-    const airborne = p.state === 'fly' || p.state === 'takeoff' || p.state === 'landing';
-    if (p.wantSpeed > 0.01 || airborne) p.heading += p.turnRate * dt;
-
-    /* Looking around: a slow sway of the whole body off the heading it will
-     * leave on, applied at draw time rather than to the heading, so the
-     * direction it walks off in is the one it chose. */
-    p.swayT += dt;
-    const swaying = p.wantSpeed < 0.01 && !airborne;
-    const swayTarget = swaying
-      ? Math.sin(p.swayT * 0.7) * 0.4 + Math.sin(p.swayT * 0.31) * 0.16
-      : 0;
-    p.sway += (swayTarget - p.sway) * (1 - Math.exp(-2.4 * dt));
-
-    p.speed += (p.wantSpeed - p.speed) * (1 - Math.exp(-2.6 * dt));
-
-    /* What is in front of it.  On the ground this is the pets' three-probe
-     * steer; in the air it is the same probe at its own altitude, which is the
-     * whole difference between flying and walking here -- `free` already takes
-     * the height it is asked from, so at eleven metres it simply passes over
-     * the things whose tops are beneath it. */
-    if (p.speed > 0.05) {
-      const lead = model.bodyR + 1.4;
-      const fx = -Math.sin(p.heading), fz = -Math.cos(p.heading);
-      const probeY = p.y + p.alt;
-      const ahead = airborne
-        ? !free(wrapX(p.x + fx * lead), p.z + fz * lead, model.bodyR, probeY)
-        : !walkable(wrapX(p.x + fx * lead), p.z + fz * lead, p.y);
-      if (ahead) {
-        const test = (h) => {
-          const hx = wrapX(p.x - Math.sin(h) * lead), hz = p.z - Math.cos(h) * lead;
-          return airborne ? free(hx, hz, model.bodyR, probeY) : walkable(hx, hz, p.y);
-        };
-        const turn = test(p.heading + 0.9) ? 1 : test(p.heading - 0.9) ? -1 : rng.sign() * 2;
-        p.turnTarget = turn * 1.8;
-        p.turnRate = p.turnTarget;
-        p.speed *= 0.6;
-      }
-
-      const step = p.speed * dt;
-      const nx = wrapX(p.x + fx * step);
-      const nz = p.z + fz * step;
-      // one axis at a time, so a corner slides instead of stopping dead
-      if (airborne) {
-        if (free(nx, p.z, model.bodyR, probeY)) p.x = nx;
-        if (free(p.x, nz, model.bodyR, probeY)) p.z = nz;
-      } else {
-        if (walkable(nx, p.z, p.y)) p.x = nx;
-        if (walkable(p.x, nz, p.y)) p.z = nz;
-      }
-    }
-
-    // the ground, eased exactly the way the player eases onto it
-    const groundY = world.heightAt(p.x, p.z, p.y);
-    p.y += (groundY - p.y) * (1 - Math.exp(-14 * dt));
-
-    /* Height, bob and bank.
-     *
-     * The altitude is measured over the *terrain*, so the circuit follows the
-     * hill up rather than flying into A1's 16.5 m of summit.  The bob is a
-     * displacement added at draw time and never integrated, or it climbs half
-     * a metre every time the sine spends longer positive than negative --
-     * `pets.js` learned that one first. */
-    const climbing = p.altTarget - p.alt;
-    // a rate rather than an exponential ease: a climb-out that never quite
-    // arrives leaves the take-off state hanging on an asymptote
-    p.alt += clamp(climbing, -CLIMB * 1.4 * dt, CLIMB * dt);
-    if (Math.abs(p.altTarget - p.alt) < 0.02) p.alt = p.altTarget;
-    p.altBob = airborne ? Math.sin(p.swayT * 1.6) * 0.22 : 0;
-
-    if (airborne) {
-      // nose up on the climb, down on the run in -- the read is the wing, but
-      // the attitude is what makes it flight rather than sliding sideways
-      p.pitch += (clamp(climbing * 0.22, -0.3, 0.35) - p.pitch) * (1 - Math.exp(-3 * dt));
-      p.roll += (clamp(-p.turnRate * 0.55, -0.6, 0.6) - p.roll) * (1 - Math.exp(-3 * dt));
-    } else {
-      p.pitch += (groundPitch() - p.pitch) * (1 - Math.exp(-8 * dt));
-      p.roll += (0 - p.roll) * (1 - Math.exp(-4 * dt));
-    }
-
-    /* The clip's rate follows the speed actually achieved: an animal shoved
-     * down to a crawl by an obstacle probe should not keep marching on the
-     * spot. */
-    if (p.state === 'wander') play('walk', { rate: clamp(p.speed / WALK, 0.5, 1.6) });
-    else if (p.state === 'runup') play('run', { rate: clamp(p.speed / RUN, 0.6, 1.5) });
+    return true;
   }
 
   /** One probe ahead, for the run-up: it leaves the ground early rather than
@@ -1117,7 +1803,11 @@ export function createDragon({ scene, world, player, cinder, model }) {
     think(dt, d);
     if (p.alt < 0.4) unstick(dt);
 
-    const near = d < DRAW;
+    /* Never LODed out from under its own rider.  `d` is zero by construction
+     * while ridden, so this is belt and braces -- but the one thing that must
+     * not be possible is a change to how the rider's position is written making
+     * the mount disappear underneath the camera that is pointed at it. */
+    const near = d < DRAW || p.ridden;
     if (near !== p.near) {
       p.near = near;
       group.visible = near;
@@ -1139,6 +1829,17 @@ export function createDragon({ scene, world, player, cinder, model }) {
       if ((p.state === 'cast' || p.state === 'turn') && p.target) {
         lookAt(p.target.x, p.target.z, 1);
       }
+      /* The rider's fire, in the same slot and for the same reason: the mixer
+       * has written the flight pose, and the jaw and the head are rotated from
+       * there.  The look-at is weighted by the envelope so the head comes round
+       * with the jaw and goes back with it. */
+      if (p.ridden && p.jawT >= 0) {
+        applyJaw();
+        if (p.riderTarget) {
+          const w = clamp(1 - Math.max(0, p.jawT - JAW.open - JAW.hold) / JAW.close, 0, 1);
+          lookAt(p.riderTarget.x, p.riderTarget.z, w);
+        }
+      }
       seat();
       /* Now the skeleton is current, so the animator's own envelope can be
        * read off it -- see `jetOpen`.  This is the whole trigger: the cinder
@@ -1147,6 +1848,26 @@ export function createDragon({ scene, world, player, cinder, model }) {
         p.jetFired = true;
         cinder.cast(jetPoint(_flat), p.target);
       }
+      /* And the rider's, off its own envelope rather than off the `firejet`
+       * bone -- which every flight clip pins shut at 0.001, so there is nothing
+       * to read there while the wings are working.  Same origin, same cast. */
+      if (p.ridden && p.riderTarget && !p.jetFired && p.jawT >= JAW.open) {
+        p.jetFired = true;
+        cinder.cast(jetPoint(_flat), p.riderTarget,
+          { airburst: p.riderTarget.airburst, speed: p.riderTarget.speed });
+      }
+    }
+
+    /* The camera, last, and only now.
+     *
+     * `main.js` updates the player before the world, so the walker's own frame
+     * has already run and deliberately left the camera alone -- see
+     * `_passenger`.  Placing it here, after `seat` has put the animal where it
+     * actually is this frame, is the difference between a camera on a dragon
+     * and a camera chasing one two thirds of a metre behind. */
+    if (p.ridden) {
+      syncRider();
+      player.applyCamera(0);
     }
   }
 
@@ -1154,6 +1875,17 @@ export function createDragon({ scene, world, player, cinder, model }) {
     group,
     update,
     get state() { return p.state; },
+    /* ------------------------------- the ride ------------------------------- */
+    get riding() { return p.ridden; },
+    get rideMode() { return p.mode; },
+    mountRider,
+    dismount,
+    /** `E`, while riding: set me down, and then off. */
+    riderE,
+    /** `F`: throw one at whatever the crosshair is on. */
+    riderBreathe,
+    /** DEV: what the crosshair is pointing at, without throwing anything. */
+    aim: () => ({ ...aimPoint(_aim) }),
     get debug() {
       return {
         state: p.state,
@@ -1162,6 +1894,8 @@ export function createDragon({ scene, world, player, cinder, model }) {
         leg: p.leg, going: p.going,
         castIn: +p.castIn.toFixed(1), tripIn: +p.tripIn.toFixed(1),
         jet: +jetOpen().toFixed(3),
+        ridden: p.ridden, mode: p.mode,
+        speed: +p.speed.toFixed(2), heading: +p.heading.toFixed(2),
       };
     },
     /** DEV: hand-drive it, for the headless checks. */
@@ -1192,10 +1926,16 @@ export function createDragon({ scene, world, player, cinder, model }) {
           z: p.z - Math.cos(p.heading) * 14 };
       }
     },
-    teleport(x, z) {
+    /** DEV: put it somewhere, optionally in the air.  `alt` is over the ground. */
+    teleport(x, z, alt) {
       p.x = wrapX(x);
       p.z = z;
       p.y = world.heightAt(p.x, p.z);
+      if (alt !== undefined) {
+        p.alt = alt;
+        p.altTarget = alt;
+        if (p.ridden) p.mode = alt > 0.4 ? 'air' : 'ground';
+      }
     },
   };
 }
